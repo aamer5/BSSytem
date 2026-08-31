@@ -1,33 +1,7 @@
-import { useAuth } from "@/_core/hooks/useAuth";
-import { Button } from "@/components/ui/button";
-import { Loader2 } from "lucide-react";
-import { Streamdown } from 'streamdown';
-
-/**
- * All content in this page are only for example, replace with your own feature implementation
- * When building pages, remember your instructions in Frontend Workflow, Frontend Best Practices, Design Guide and Common Pitfalls
- */
-export default function Home() {
-  // The useAuth hook provides authentication state.
-  // To implement login/logout, call logout(), or start login from an event
-  // handler: onClick={() => startLogin()} (imported from "@/const"). Never call
-  // startLogin() during render (no href={startLogin()}) — it mints a one-time
-  // nonce cookie and must run only at the moment of navigation.
-  let { user, loading, error, isAuthenticated, logout } = useAuth();
-
-  // If theme is switchable in App.tsx, we can implement theme toggling like this:
-  // const { theme, toggleTheme } = useTheme();
-
-  return (
-    <div className="min-h-screen flex flex-col">
-      <main>
-        {/* Example: lucide-react for icons */}
-        <Loader2 className="animate-spin" />
-        Example Page
-        {/* Example: Streamdown for markdown rendering */}
-        <Streamdown>Any **markdown** content</Streamdown>
-        <Button variant="default">Example Button</Button>
-      </main>
-    </div>
-  );
-}
+import { ApiErrorState } from "@/components/ApiErrorState";
+import { useLocale } from "@/contexts/LocaleContext";
+import { trpc } from "@/lib/trpc";
+import { ArrowLeft, ArrowRight, ClipboardList, Clock3, FilePlus2, ListChecks, ShieldCheck } from "lucide-react";
+import { Link } from "wouter";
+import { statusLabels } from "@shared/domain";
+export default function Home() { const { locale } = useLocale(); const summary = trpc.dashboard.summary.useQuery({ locale }); const ar = locale === "ar"; const cards = [{ label: ar ? "إجمالي الطلبات" : "Total requests", value: summary.data?.total ?? 0, icon: ClipboardList, tone: "bg-[#e6f1ed]" }, { label: ar ? "تحتاج إجراءً" : "Pending action", value: summary.data?.pending ?? 0, icon: Clock3, tone: "bg-[#fff1d5]" }, { label: ar ? "قيد المراجعة" : "In review", value: summary.data?.inReview ?? 0, icon: ListChecks, tone: "bg-[#e9edf5]" }, { label: ar ? "مكتملة" : "Completed", value: summary.data?.completed ?? 0, icon: ShieldCheck, tone: "bg-[#eaf4e5]" }]; return <div className="space-y-8"><div className="flex flex-col justify-between gap-5 lg:flex-row lg:items-end"><div><p className="eyebrow">{ar ? "مساحة الحوكمة" : "Governance workspace"}</p><h1 className="mt-3 text-4xl font-semibold tracking-tight text-[#163f43]">{ar ? "صباحٌ أكثر تنظيمًا لأعمال المجلس" : "A clearer operating picture for the board"}</h1><p className="mt-3 max-w-2xl leading-7 text-[#6f756e]">{ar ? "تابع مسار الموضوعات، وراجع الأعمال المعلقة، وحافظ على سجل قرار واضح من نقطة الاستقبال حتى الإغلاق." : "Follow subject requests, review pending work, and keep a clear decision record from intake to closure."}</p></div><Link href="/requests/new" className="inline-flex items-center justify-center gap-2 rounded-2xl bg-[#163f43] px-5 py-3 text-sm font-semibold text-white shadow-sm"><FilePlus2 className="h-4 w-4" />{ar ? "طلب موضوع جديد" : "New subject request"}</Link></div>{summary.error && <ApiErrorState error={summary.error} locale={locale} onRetry={() => summary.refetch()} />}{<div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">{cards.map(({ label, value, icon: Icon, tone }) => <div key={label} className={`rounded-3xl border border-[#e2ded2] p-5 ${tone}`}><div className="flex items-center justify-between"><span className="rounded-2xl bg-white/75 p-3 text-[#163f43]"><Icon className="h-5 w-5" /></span><span className="text-3xl font-semibold">{value}</span></div><p className="mt-8 text-sm font-medium text-[#53645f]">{label}</p></div>)}</div>}<div className="grid gap-6 xl:grid-cols-[1.25fr_.75fr]"><section className="rounded-3xl border border-[#e2ded2] bg-white p-6"><div className="flex items-center justify-between"><div><p className="eyebrow">{ar ? "النشاط الأخير" : "Recent activity"}</p><h2 className="mt-2 text-xl font-semibold">{ar ? "آخر ما تحرك في المسار" : "Latest movement in the workflow"}</h2></div><Link href="/requests" className="text-sm font-semibold text-[#a1722d]">{ar ? "عرض الكل" : "View all"}</Link></div><div className="mt-6 divide-y divide-[#eee9df]">{summary.data?.recent.length ? summary.data.recent.map(item => <Link key={item.id} href={`/requests/${item.id}`} className="flex items-center justify-between gap-4 py-4"><div className="min-w-0"><p className="truncate font-semibold">{item.title}</p><p className="mt-1 text-xs text-[#7d8479]" dir="ltr">{item.referenceNumber}</p></div><span className="rounded-full bg-[#edf3ef] px-3 py-1 text-xs font-semibold">{statusLabels[item.status as keyof typeof statusLabels]?.[locale] || item.status}</span></Link>) : <div className="py-12 text-center text-sm text-[#7d8479]">{ar ? "لا يوجد نشاط مسجل بعد." : "No activity recorded yet."}</div>}</div></section><section className="rounded-3xl bg-[#163f43] p-7 text-white"><p className="eyebrow text-[#d8a84e]">{ar ? "مبدأ العمل" : "Operating principle"}</p><h2 className="mt-4 text-2xl font-semibold leading-10">{ar ? "الوضوح يحمي القرار." : "Clarity protects the decision."}</h2><p className="mt-4 leading-7 text-[#d5e0da]">{ar ? "كل انتقال في حالة الطلب يسجل مع فاعله ونسخته الزمنية، لتبقى المسؤولية قابلة للمراجعة." : "Every state transition is recorded with its actor and version, keeping accountability reviewable."}</p><Link href="/requests" className="mt-8 inline-flex items-center gap-2 rounded-xl bg-[#d8a84e] px-4 py-3 text-sm font-semibold text-[#163f43]">{ar ? "فتح قائمة العمل" : "Open work queue"}{ar ? <ArrowLeft className="h-4 w-4" /> : <ArrowRight className="h-4 w-4" />}</Link></section></div></div>; }

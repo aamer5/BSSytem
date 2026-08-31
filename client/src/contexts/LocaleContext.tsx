@@ -1,0 +1,5 @@
+import type { Locale } from "@shared/domain";
+import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
+const LocaleContext = createContext<{ locale: Locale; setLocale: (locale: Locale) => void }>({ locale: "ar", setLocale: () => undefined });
+export function LocaleProvider({ children }: { children: ReactNode }) { const [locale, setLocaleState] = useState<Locale>(() => { const value = localStorage.getItem("board-locale"); return value === "en" ? "en" : "ar"; }); const setLocale = (next: Locale) => { localStorage.setItem("board-locale", next); setLocaleState(next); }; useEffect(() => { document.documentElement.lang = locale; document.documentElement.dir = locale === "ar" ? "rtl" : "ltr"; }, [locale]); const value = useMemo(() => ({ locale, setLocale }), [locale]); return <LocaleContext.Provider value={value}>{children}</LocaleContext.Provider>; }
+export function useLocale() { return useContext(LocaleContext); }

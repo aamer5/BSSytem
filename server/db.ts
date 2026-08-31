@@ -1,92 +1,11 @@
-import { eq } from "drizzle-orm";
+import { eq, and, desc, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
-import { InsertUser, users } from "../drizzle/schema";
-import { ENV } from './_core/env';
-
-let _db: ReturnType<typeof drizzle> | null = null;
-
-// Lazily create the drizzle instance so local tooling can run without a DB.
-export async function getDb() {
-  if (!_db && process.env.DATABASE_URL) {
-    try {
-      _db = drizzle(process.env.DATABASE_URL);
-    } catch (error) {
-      console.warn("[Database] Failed to connect:", error);
-      _db = null;
-    }
-  }
-  return _db;
-}
-
-export async function upsertUser(user: InsertUser): Promise<void> {
-  if (!user.openId) {
-    throw new Error("User openId is required for upsert");
-  }
-
-  const db = await getDb();
-  if (!db) {
-    console.warn("[Database] Cannot upsert user: database not available");
-    return;
-  }
-
-  try {
-    const values: InsertUser = {
-      openId: user.openId,
-    };
-    const updateSet: Record<string, unknown> = {};
-
-    const textFields = ["name", "email", "loginMethod"] as const;
-    type TextField = (typeof textFields)[number];
-
-    const assignNullable = (field: TextField) => {
-      const value = user[field];
-      if (value === undefined) return;
-      const normalized = value ?? null;
-      values[field] = normalized;
-      updateSet[field] = normalized;
-    };
-
-    textFields.forEach(assignNullable);
-
-    if (user.lastSignedIn !== undefined) {
-      values.lastSignedIn = user.lastSignedIn;
-      updateSet.lastSignedIn = user.lastSignedIn;
-    }
-    if (user.role !== undefined) {
-      values.role = user.role;
-      updateSet.role = user.role;
-    } else if (user.openId === ENV.ownerOpenId) {
-      values.role = 'admin';
-      updateSet.role = 'admin';
-    }
-
-    if (!values.lastSignedIn) {
-      values.lastSignedIn = new Date();
-    }
-
-    if (Object.keys(updateSet).length === 0) {
-      updateSet.lastSignedIn = new Date();
-    }
-
-    await db.insert(users).values(values).onDuplicateKeyUpdate({
-      set: updateSet,
-    });
-  } catch (error) {
-    console.error("[Database] Failed to upsert user:", error);
-    throw error;
-  }
-}
-
-export async function getUserByOpenId(openId: string) {
-  const db = await getDb();
-  if (!db) {
-    console.warn("[Database] Cannot get user: database not available");
-    return undefined;
-  }
-
-  const result = await db.select().from(users).where(eq(users.openId, openId)).limit(1);
-
-  return result.length > 0 ? result[0] : undefined;
-}
-
-// TODO: add feature queries here as your schema grows.
+import { users, boardMemberships, boards, specialties, subjectRequests, requestHistory, type InsertUser } from "../drizzle/schema";
+let db: ReturnType<typeof drizzle> | null = null;
+export async function getDb() { if (!db && process.env.DATABASE_URL) db = drizzle(process.env.DATABASE_URL); return db; }
+export async function upsertUser(user: InsertUser) { const connection = await getDb(); if (!connection) return; const values: InsertUser = { openId: user.openId, name: user.name ?? null, email: user.email ?? null, loginMethod: user.loginMethod ?? null, lastSignedIn: user.lastSignedIn ?? new Date() }; await connection.insert(users).values(values).onDuplicateKeyUpdate({ set: { name: values.name, email: values.email, loginMethod: values.loginMethod, lastSignedIn: values.lastSignedIn } }); }
+export async function getUserByOpenId(openId: string) { const connection = await getDb(); if (!connection) return undefined; const rows = await connection.select().from(users).where(eq(users.openId, openId)).limit(1); return rows[0]; }
+export async function getBoardRoles(userId: number, boardId: number) { const connection = await getDb(); if (!connection) return []; return connection.select({ role: boardMemberships.role }).from(boardMemberships).where(and(eq(boardMemberships.userId, userId), eq(boardMemberships.boardId, boardId), eq(boardMemberships.isActive, true))); }
+export async function canAccessBoard(userId: number, role: "admin" | "user", boardId: number) { if (role === "admin") return true; return (await getBoardRoles(userId, boardId)).length > 0; }
+export async function listReferenceData(userId: number, role: "admin" | "user") { const connection = await getDb(); if (!connection) return { boards: [], specialties: [] }; const accessible = role === "admin" ? await connection.select().from(boards).where(eq(boards.isActive, true)) : await connection.select({ board: boards }).from(boards).innerJoin(boardMemberships, eq(boardMemberships.boardId, boards.id)).where(and(eq(boardMemberships.userId, userId), eq(boardMemberships.isActive, true), eq(boards.isActive, true))); const boardRows = accessible.map(row => "board" in row ? row.board : row); const boardIds = boardRows.map(item => item.id); const specialtyRows = boardIds.length ? await connection.select().from(specialties).where(sql`${specialties.boardId} in (${sql.join(boardIds.map(id => sql`${id}`), sql`, `)})`) : []; return { boards: boardRows, specialties: specialtyRows }; }
+export { boards, specialties, subjectRequests, requestHistory };
