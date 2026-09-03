@@ -48,4 +48,4 @@
 - [x] Configure Firebase Hosting to route frontend SPA traffic and API traffic to a Firebase-compatible Cloud Run backend.
 - [x] Add a production container/deployment definition for the Express/tRPC backend on Cloud Run.
 - [x] Document Firebase project setup, runtime secrets, Manus OAuth redirect configuration, database connectivity, and deployment order.
-- [ ] Sync the Firebase Hosting and Cloud Run configuration to GitHub repository aamer5/BSSytem before requesting publish confirmation.
+- [x] Sync the Firebase Hosting and Cloud Run configuration to GitHub repository aamer5/BSSytem before requesting publish confirmation.
