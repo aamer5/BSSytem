@@ -32,3 +32,10 @@
 - [x] Add signed attachment open/download actions to the detail UI and router contract coverage for the protected attachment namespace.
 - [x] Add router contract coverage plus pure tests for stale row versions, forbidden permissions, history/snapshot policy, and checklist behavior.
 - [x] Strengthen bilingual inline feedback for checklist, upload, claim, and administration mutations, with generic localized error handling elsewhere.
+
+- [x] Fix the sign-in button so clicking it reliably starts the configured Manus OAuth flow and provides visible failure feedback if navigation cannot begin.
+
+- [x] Fix the mobile sign-in button so clicking it reliably starts the configured Manus OAuth flow and provides visible failure feedback if navigation cannot begin.
+
+- [ ] Publish checkpoint de9515ec or the current repaired checkpoint through the Management UI, then retest sign-in on the public domain in mobile and desktop browsers.
+- [ ] Verify the live sign-in flow reaches Manus OAuth and verify the localized initialization-failure message in a controlled preview-only test.
