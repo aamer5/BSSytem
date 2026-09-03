@@ -39,3 +39,12 @@
 
 - [ ] Publish checkpoint de9515ec or the current repaired checkpoint through the Management UI, then retest sign-in on the public domain in mobile and desktop browsers.
 - [ ] Verify the live sign-in flow reaches Manus OAuth and verify the localized initialization-failure message in a controlled preview-only test.
+
+- [x] Run a read-only GitHub connector test, show fetched account/repository data, and document practical capabilities and usage examples.
+
+- [x] Sync the current Board Secretariat Platform code to GitHub repository aamer5/BSSytem with a reviewed commit and push result.
+
+- [x] Add Firebase Hosting configuration for the frontend build, preserve the Manus full-stack deployment, and document the required Firebase project ID, rewrites, secrets, and deployment command.
+- [x] Configure Firebase Hosting to route frontend SPA traffic and API traffic to a Firebase-compatible Cloud Run backend.
+- [x] Add a production container/deployment definition for the Express/tRPC backend on Cloud Run.
+- [x] Document Firebase project setup, runtime secrets, Manus OAuth redirect configuration, database connectivity, and deployment order.

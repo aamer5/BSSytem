@@ -1,0 +1,10 @@
+node_modules
+.env
+.env.*
+.git
+.git/**
+.manus-logs
+.manus-logs/**
+dist/index.js
+coverage
+.DS_Store

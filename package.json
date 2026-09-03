@@ -10,7 +10,10 @@
     "check": "tsc --noEmit",
     "format": "prettier --write .",
     "test": "vitest run",
-    "db:push": "drizzle-kit generate && drizzle-kit migrate"
+    "db:push": "drizzle-kit generate && drizzle-kit migrate",
+    "firebase:build": "pnpm run build",
+    "firebase:deploy": "pnpm run firebase:build && npx firebase-tools deploy --only hosting",
+    "cloudrun:deploy": "bash cloudrun/deploy.sh"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.693.0",
