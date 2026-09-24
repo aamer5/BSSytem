@@ -1,11 +1,19 @@
-import { eq, and, desc, sql } from "drizzle-orm";
-import { drizzle } from "drizzle-orm/mysql2";
-import { users, boardMemberships, boards, specialties, subjectRequests, requestHistory, type InsertUser } from "../drizzle/schema";
-let db: ReturnType<typeof drizzle> | null = null;
-export async function getDb() { if (!db && process.env.DATABASE_URL) db = drizzle(process.env.DATABASE_URL); return db; }
-export async function upsertUser(user: InsertUser) { const connection = await getDb(); if (!connection) return; const values: InsertUser = { openId: user.openId, name: user.name ?? null, email: user.email ?? null, loginMethod: user.loginMethod ?? null, lastSignedIn: user.lastSignedIn ?? new Date() }; await connection.insert(users).values(values).onDuplicateKeyUpdate({ set: { name: values.name, email: values.email, loginMethod: values.loginMethod, lastSignedIn: values.lastSignedIn } }); }
-export async function getUserByOpenId(openId: string) { const connection = await getDb(); if (!connection) return undefined; const rows = await connection.select().from(users).where(eq(users.openId, openId)).limit(1); return rows[0]; }
-export async function getBoardRoles(userId: number, boardId: number) { const connection = await getDb(); if (!connection) return []; return connection.select({ role: boardMemberships.role }).from(boardMemberships).where(and(eq(boardMemberships.userId, userId), eq(boardMemberships.boardId, boardId), eq(boardMemberships.isActive, true))); }
+import type { Board, BoardMembership, Specialty } from "@shared/schema";
+import { col, COLLECTIONS, queryAll, queryIn } from "./firestore";
+
+export async function getActiveMemberships(userId: number) {
+  return queryAll<BoardMembership>(col(COLLECTIONS.boardMemberships).where("userId", "==", userId).where("isActive", "==", true));
+}
+export async function getBoardRoles(userId: number, boardId: number) {
+  return (await getActiveMemberships(userId)).filter(item => item.boardId === boardId).map(item => ({ role: item.role }));
+}
 export async function canAccessBoard(userId: number, role: "admin" | "user", boardId: number) { if (role === "admin") return true; return (await getBoardRoles(userId, boardId)).length > 0; }
-export async function listReferenceData(userId: number, role: "admin" | "user") { const connection = await getDb(); if (!connection) return { boards: [], specialties: [] }; const accessible = role === "admin" ? await connection.select().from(boards).where(eq(boards.isActive, true)) : await connection.select({ board: boards }).from(boards).innerJoin(boardMemberships, eq(boardMemberships.boardId, boards.id)).where(and(eq(boardMemberships.userId, userId), eq(boardMemberships.isActive, true), eq(boards.isActive, true))); const boardRows = accessible.map(row => "board" in row ? row.board : row); const boardIds = boardRows.map(item => item.id); const specialtyRows = boardIds.length ? await connection.select().from(specialties).where(sql`${specialties.boardId} in (${sql.join(boardIds.map(id => sql`${id}`), sql`, `)})`) : []; return { boards: boardRows, specialties: specialtyRows }; }
-export { boards, specialties, subjectRequests, requestHistory };
+// Board ids the user may see, or null when every board is visible (admins).
+export async function accessibleBoardIds(userId: number, role: "admin" | "user") { if (role === "admin") return null; return Array.from(new Set((await getActiveMemberships(userId)).map(item => item.boardId))); }
+export async function listReferenceData(userId: number, role: "admin" | "user") {
+  const boardIds = await accessibleBoardIds(userId, role);
+  const boardRows = boardIds === null ? await queryAll<Board>(col(COLLECTIONS.boards).where("isActive", "==", true)) : (await queryIn<Board>(COLLECTIONS.boards, "id", boardIds)).filter(board => board.isActive);
+  boardRows.sort((a, b) => a.id - b.id);
+  const specialtyRows = (await queryIn<Specialty>(COLLECTIONS.specialties, "boardId", boardRows.map(board => board.id))).sort((a, b) => a.id - b.id);
+  return { boards: boardRows, specialties: specialtyRows };
+}

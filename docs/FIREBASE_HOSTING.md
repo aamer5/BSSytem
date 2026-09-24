@@ -1,135 +1,133 @@
-# Firebase External Hosting
+# Firebase Deployment (Hosting, Auth, Firestore)
 
-This project is configured for Firebase as an external host while preserving the existing Manus WebDev deployment. The supported full-stack arrangement is **Firebase Hosting for the compiled React frontend** and **Google Cloud Run for the Express/tRPC server**. Firebase Hosting cannot execute this project’s Node server by itself; the backend is required for Manus OAuth callbacks, protected tRPC procedures, database access, and S3-backed attachment operations. Firebase officially supports routing Hosting requests to Cloud Run services through Hosting rewrites [1].
+The platform runs entirely on Firebase / Google Cloud:
 
-## Architecture
-
-| Layer | Firebase / Google Cloud resource | Responsibility |
+| Layer | Resource | Responsibility |
 |---|---|---|
-| Browser UI | Firebase Hosting | Serves `dist/public`, HTTPS, CDN delivery, and SPA history fallback. |
-| API and OAuth | Cloud Run service `board-secretariat-platform` | Runs `dist/index.js`, Express, tRPC, Manus OAuth callback, and server-side integrations. |
-| Persistence | Existing MySQL/TiDB database | Stores workflow, access-control, audit, and attachment metadata. |
-| File bytes | Existing S3-compatible storage | Stores uploaded documents; the database retains references and metadata only. |
+| Browser UI | Firebase Hosting | Serves `dist/public` (React SPA) over HTTPS/CDN with SPA history fallback. |
+| Sign-in | Firebase Authentication (Email/Password) | Registration, sign-in, email verification and password reset in the browser. |
+| API | Cloud Run service `board-secretariat-platform` | Runs `dist/index.js` (Express + tRPC). Verifies Firebase ID tokens and enforces board permissions and workflow rules. |
+| Persistence | Cloud Firestore (Native mode) | Boards, memberships, requests, checklists, history, snapshots, attachment metadata. |
+| File bytes | Existing Forge/S3 storage | Unchanged; Firestore keeps metadata only. |
 
-The committed `firebase.json` routes `/api/**` to the Cloud Run service in `us-central1` and sends all other unmatched paths to `/index.html`. The API rewrite must appear before the SPA fallback because Firebase evaluates rewrite rules in order [2]. Change the service region in `firebase.json` if the Cloud Run service is deployed elsewhere.
+The browser never reads or writes Firestore directly. All data access goes through the tRPC API using the Firebase Admin SDK, and `firestore.rules` denies every client request.
 
-## One-time Firebase and Google Cloud setup
+## How authentication works
 
-Create or select a Firebase project and copy `.firebaserc.example` to `.firebaserc`, replacing `YOUR_FIREBASE_PROJECT_ID` with the real project ID. The Firebase project is also a Google Cloud project. Firebase Hosting setup requires a Firebase project, and Cloud Run source deployment requires the Cloud Run and Cloud Build APIs [1] [3].
+1. The browser signs in with the Firebase JS SDK (`client/src/lib/firebase.ts`, `client/src/components/AuthScreen.tsx`).
+2. New accounts receive a verification email. Until the address is verified the app shows the "Verify your email" screen and the API treats the caller as signed out.
+3. Every tRPC request sends `Authorization: Bearer <Firebase ID token>`. `server/_core/auth.ts` verifies it with the Admin SDK and resolves the application user:
+   - an existing user linked to the Firebase UID, otherwise
+   - a user migrated from MySQL with the same verified email (linked on first sign-in, keeping its id, memberships and history), otherwise
+   - a new user with the `user` role.
+4. Emails listed in `ADMIN_EMAILS` are promoted to the global `admin` role once verified. Admins can grant or revoke the role from **Administration**.
 
-Cloud Run requires a billing account. Associating billing with a Firebase project moves it from the Spark plan to Blaze, so review the current Firebase and Cloud Run pricing, quotas, and budget-alert options before enabling the backend [1]. This repository does not contain Firebase credentials or production secrets.
+## One-time Firebase setup
+
+In the [Firebase console](https://console.firebase.google.com/) for project `bssytem-27ee8`:
+
+1. **Authentication → Sign-in method** → enable **Email/Password**.
+2. **Authentication → Settings → Authorized domains** → make sure the Hosting domain(s) and any custom domain are listed.
+3. **Firestore Database** → create a database in **Native mode** (pick the region closest to Cloud Run, e.g. `us-central1` / `nam5`).
+4. **Project settings → Your apps** → add a **Web app** and copy `apiKey` and `appId`. These are public identifiers, not secrets.
+5. Optional: **Authentication → Templates** to customise the verification / password-reset emails (Arabic and English are sent according to the UI language).
+
+Deploy the locked-down Firestore rules:
 
 ```bash
-cp .firebaserc.example .firebaserc
-# Edit .firebaserc and replace YOUR_FIREBASE_PROJECT_ID.
+npx firebase-tools login
+pnpm run firebase:deploy:rules
+```
 
+No composite indexes are required; every query uses equality filters only.
+
+## Environment contract
+
+| Variable | Where | Purpose |
+|---|---|---|
+| `FIREBASE_PROJECT_ID` | Server | Firebase project (`bssytem-27ee8`). |
+| `FIREBASE_SERVICE_ACCOUNT` | Server, optional | Service-account JSON (single line). Omit on Cloud Run to use the service identity. |
+| `ADMIN_EMAILS` | Server | Comma-separated administrator emails. |
+| `BUILT_IN_FORGE_API_URL`, `BUILT_IN_FORGE_API_KEY` | Server (Secret Manager) | File storage, unchanged. |
+| `VITE_FIREBASE_API_KEY`, `VITE_FIREBASE_APP_ID` | Build time | Firebase web app config. |
+| `VITE_FIREBASE_AUTH_DOMAIN`, `VITE_FIREBASE_PROJECT_ID` | Build time | Defaults to `bssytem-27ee8.firebaseapp.com` / `bssytem-27ee8`. |
+
+`.env.example` lists every variable for local development. The old `DATABASE_URL`, `JWT_SECRET`, `VITE_APP_ID`, `OAUTH_SERVER_URL`, `VITE_OAUTH_PORTAL_URL` and `OWNER_OPEN_ID` settings are no longer used.
+
+For GitHub Actions, add `VITE_FIREBASE_API_KEY` and `VITE_FIREBASE_APP_ID` as repository **variables** (Settings → Secrets and variables → Actions → Variables); `.github/workflows/firebase-deploy.yml` passes them to the build.
+
+## Deploy the backend (Cloud Run)
+
+```bash
 gcloud auth login
-gcloud config set project YOUR_FIREBASE_PROJECT_ID
-gcloud services enable run.googleapis.com cloudbuild.googleapis.com artifactregistry.googleapis.com
-```
+gcloud config set project bssytem-27ee8
+gcloud services enable run.googleapis.com cloudbuild.googleapis.com artifactregistry.googleapis.com firestore.googleapis.com
 
-Install the Firebase CLI if it is not already available, then authenticate it against the same project:
+# Allow the Cloud Run runtime service account to use Firestore.
+gcloud projects add-iam-policy-binding bssytem-27ee8 \
+  --member "serviceAccount:$(gcloud projects describe bssytem-27ee8 --format='value(projectNumber)')-compute@developer.gserviceaccount.com" \
+  --role roles/datastore.user
 
-```bash
-npm install --global firebase-tools
-firebase login
-firebase use YOUR_FIREBASE_PROJECT_ID
-```
-
-## Deploy the backend first
-
-The existing build is compatible with Cloud Run source deployment. No Dockerfile is required: Cloud Run can use Google Cloud buildpacks when deploying directly from source [3]. The application already listens on the runtime-provided `PORT` value, and the production command is `node dist/index.js`.
-
-Before deploying, configure the exact backend environment contract below in Cloud Run. Do not place these values in `firebase.json`, `.firebaserc`, source code, or GitHub. Prefer Secret Manager references for production credentials.
-
-| Variable | Used by | Production source |
-|---|---|---|
-| `DATABASE_URL` | MySQL/TiDB connection | Secret Manager secret `DATABASE_URL`. |
-| `JWT_SECRET` | Session cookie signing | Secret Manager secret `JWT_SECRET`. |
-| `VITE_APP_ID` | Manus OAuth client/application ID | Secret Manager secret `VITE_APP_ID`; also passed as a build variable. |
-| `OAUTH_SERVER_URL` | Server-side Manus OAuth API | Secret Manager secret `OAUTH_SERVER_URL`. |
-| `OWNER_OPEN_ID` | Owner-aware authorization and administration | Secret Manager secret `OWNER_OPEN_ID`. |
-| `BUILT_IN_FORGE_API_URL` | Server-side Manus built-in APIs, including storage support | Secret Manager secret `BUILT_IN_FORGE_API_URL`. |
-| `BUILT_IN_FORGE_API_KEY` | Server-side Manus built-in API authorization | Secret Manager secret `BUILT_IN_FORGE_API_KEY`. |
-| `NODE_ENV` | Production server behavior | Plain Cloud Run variable set to `production`. |
-| `VITE_OAUTH_PORTAL_URL` | Browser login redirect initiation | Build-time variable; it is not a credential. |
-
-`VITE_OAUTH_PORTAL_URL` and `VITE_APP_ID` are read by `client/src/const.ts` during the Vite build. The server-side list above matches the reads in `server/_core/env.ts` and `server/db.ts`. The project does not read a separate Firebase SDK configuration object in the browser because Firebase is used as the hosting origin rather than as the application database or authentication provider.
-
-```bash
-gcloud run deploy board-secretariat-platform \
-  --source . \
-  --region us-central1 \
-  --allow-unauthenticated \
-  --set-env-vars NODE_ENV=production \
-  --set-env-vars VITE_APP_ID=YOUR_MANUS_APP_ID \
-  --set-env-vars OAUTH_SERVER_URL=https://api.manus.im \
-  --set-env-vars VITE_OAUTH_PORTAL_URL=YOUR_MANUS_OAUTH_PORTAL_URL
-```
-
-The `--allow-unauthenticated` setting is needed so Firebase Hosting can reach the Cloud Run origin. This does **not** make protected business data public: protected tRPC procedures continue to enforce the Manus session and board-scoped permissions in the application. Keep the Cloud Run service URL available for health checks, but use the Firebase Hosting domain for browser traffic.
-
-The checked-in `cloudrun/deploy.sh` uses `--set-secrets` for the exact runtime contract above and `--set-build-env-vars` for the browser build values. Before running it, create the named Secret Manager secrets and grant the Cloud Run service identity Secret Manager Secret Accessor. The database must accept connections from the Cloud Run deployment environment, and S3 storage configuration must remain server-side through the existing Manus built-in storage API configuration.
-
-The repository command is:
-
-```bash
-export FIREBASE_PROJECT_ID=YOUR_FIREBASE_PROJECT_ID
-export VITE_APP_ID=YOUR_MANUS_APP_ID
-export VITE_OAUTH_PORTAL_URL=YOUR_MANUS_OAUTH_PORTAL_URL
+export FIREBASE_PROJECT_ID=bssytem-27ee8
+export VITE_FIREBASE_API_KEY=...        # from the web app config
+export VITE_FIREBASE_APP_ID=...         # from the web app config
+export ADMIN_EMAILS=you@example.com
 pnpm run cloudrun:deploy
 ```
 
-The script uses the default `us-central1` region and public invocation, and accepts `CLOUD_RUN_SERVICE` and `CLOUD_RUN_REGION` overrides. If a different region or a stricter deployment policy is required, edit the command after reviewing the Hosting rewrite target. The public Cloud Run origin is intentional for Firebase Hosting’s rewrite; application-level OAuth and board permission guards remain mandatory.
+Cloud Run requires the Blaze (pay-as-you-go) plan. `--allow-unauthenticated` lets Firebase Hosting reach the service; every protected procedure still requires a verified Firebase ID token and board membership.
 
-## Deploy Firebase Hosting
+## Deploy Hosting
 
-Build the frontend and deploy Hosting after the Cloud Run service exists:
+Once the Cloud Run service exists, route `/api/**` to it by adding this rewrite **before** the SPA fallback in `firebase.json`:
+
+```json
+{ "source": "/api/**", "run": { "serviceId": "board-secretariat-platform", "region": "us-central1" } }
+```
+
+Then deploy:
 
 ```bash
 pnpm run firebase:deploy
 ```
 
-This runs the existing production build and then executes `firebase-tools deploy --only hosting`. The Hosting site is served from `dist/public`. Firebase Hosting provides HTTPS and project subdomains such as `PROJECT_ID.web.app` and `PROJECT_ID.firebaseapp.com` [4]. A custom domain can be attached later through the Firebase console.
+Pushes to `main` also deploy Hosting through GitHub Actions.
 
-The two deployment commands are intentionally separate. This makes it possible to roll back the frontend independently and prevents a Hosting deploy from being mistaken for a backend release.
+## Migrating existing MySQL data
 
-## Manus OAuth configuration
+Run once, after Firestore is created and before users start working in the new deployment:
 
-After the Firebase domain is known, add the production callback URL to the Manus OAuth application configuration. The callback path used by this project is:
+```bash
+export LEGACY_DATABASE_URL='mysql://user:password@host:3306/database'
+export FIREBASE_PROJECT_ID=bssytem-27ee8
+gcloud auth application-default login   # or set FIREBASE_SERVICE_ACCOUNT
 
-```text
-https://YOUR_FIREBASE_HOSTING_DOMAIN/api/oauth/callback
+pnpm migrate:firestore --dry-run        # prints row counts per table, writes nothing
+pnpm migrate:firestore                  # copies every table into Firestore
 ```
 
-Also confirm that the OAuth application accepts the Firebase origin as a permitted web origin and that the configured portal/client settings match the production environment. Test the full flow from the Firebase domain: click **Sign in**, complete Manus OAuth, return to `/api/oauth/callback`, and verify that the authenticated workspace loads.
+- Every row becomes a document whose ID is its old numeric id, so references between records keep working. Id counters are raised past the largest migrated id.
+- The script refuses to run if a target collection already has documents. `--overwrite` replaces documents that share an id.
+- Users are migrated without a Firebase login. Each person registers (or uses **Forgot password?**) with the **same email address** they had before. After verifying it, they are linked to their old account, keeping their role and board memberships.
 
-The existing Manus WebDev domain remains a separate deployment target. Do not remove its OAuth redirect until the Firebase deployment has been verified and the old environment is intentionally retired.
+## Local development with emulators
+
+```bash
+npx firebase-tools emulators:start --only auth,firestore --project demo-bssytem
+# In another terminal, with the emulator variables from .env.example set:
+pnpm dev
+```
+
+`pnpm test` runs the unit tests. `pnpm test:emulator` also runs `server/firestore.emulator.test.ts` (auth, account linking, the request workflow, access scoping and id allocation) against the emulators. It needs Java 11+.
 
 ## Validation checklist
 
 | Check | Expected result |
 |---|---|
-| `pnpm run check` | TypeScript completes without errors. |
-| `pnpm test` | Existing workflow and authorization tests pass. |
-| `pnpm run firebase:build` | Vite and the server bundle produce `dist/public` and `dist/index.js`. |
-| Firebase Hosting root | The Arabic-first shell loads and browser routes survive refresh. |
-| `/api/trpc/auth.me` | The request reaches Cloud Run; unauthenticated state is handled by the UI. |
-| OAuth callback | Manus redirects back to the Firebase domain and establishes the session. |
-| Protected request API | Unauthenticated callers are rejected; authorized board members can use the workflow. |
-| Attachment access | Signed storage references are issued only through protected server procedures. |
-| Mobile RTL | Arabic remains RTL and English switching remains LTR on the deployed domain. |
-
-## Important limitation
-
-Firebase Hosting plus Cloud Run is an external deployment path, not a migration of the managed Manus database, OAuth service, or S3 service. The application can continue using those services only if their production network access, credentials, allowed origins, callback URLs, and terms support the external deployment. If the goal is to remove every Manus-managed dependency, that is a separate migration covering OAuth, database hosting, file storage, secrets, and operational monitoring.
-
-## References
-
-[1]: https://firebase.google.com/docs/hosting/cloud-run "Serve dynamic content and host microservices with Cloud Run — Firebase"
-
-[2]: https://firebase.google.com/docs/hosting/full-config "Configure Hosting behavior — Firebase"
-
-[3]: https://docs.cloud.google.com/run/docs/deploying-source-code "Deploy services from source code — Google Cloud Run"
-
-[4]: https://firebase.google.com/docs/hosting/quickstart "Get started with Firebase Hosting — Firebase"
+| `pnpm check` | TypeScript completes without errors. |
+| `pnpm test:emulator` | Unit and Firestore/Auth integration tests pass. |
+| `pnpm build` | Produces `dist/public` and `dist/index.js`. |
+| Register | Verification email arrives; the app unlocks after the link is opened and **Continue** is pressed. |
+| `ADMIN_EMAILS` user | Sees **Administration** after verifying. |
+| Migrated user | Registers with the old email and sees their previous boards and requests. |
+| Mobile RTL | Arabic stays RTL and English switches to LTR on the deployed domain. |
