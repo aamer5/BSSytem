@@ -37,7 +37,9 @@ queryClient.getMutationCache().subscribe(event => {
 const trpcClient = trpc.createClient({
   links: [
     httpBatchLink({
-      url: "/api/trpc",
+      // Empty when the API shares the website's origin; set VITE_API_URL when
+      // the API runs elsewhere (e.g. https://board-secretariat-api.onrender.com).
+      url: `${(import.meta.env.VITE_API_URL ?? "").replace(/\/+$/, "")}/api/trpc`,
       transformer: superjson,
       async headers() {
         const token = await getIdToken();

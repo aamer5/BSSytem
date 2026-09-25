@@ -1,13 +1,13 @@
 # Firebase Deployment (Hosting, Auth, Firestore)
 
-The platform runs entirely on Firebase / Google Cloud:
+The website, sign-in and database run on Firebase's free **Spark** plan. The API server runs on **Render** (free plan) because Cloud Run needs the Blaze plan, and Google Cloud billing for Saudi addresses goes through the CNTXT reseller. Cloud Run remains documented below as an alternative.
 
 | Layer | Resource | Responsibility |
 |---|---|---|
 | Browser UI | Firebase Hosting | Serves `dist/public` (React SPA) over HTTPS/CDN with SPA history fallback. |
 | Sign-in | Firebase Authentication (Email/Password) | Registration, sign-in, email verification and password reset in the browser. |
-| API | Cloud Run service `board-secretariat-platform` | Runs `dist/index.js` (Express + tRPC). Verifies Firebase ID tokens and enforces board permissions and workflow rules. |
-| Persistence | Cloud Firestore (Native mode) | Boards, memberships, requests, checklists, history, snapshots, attachment metadata. |
+| API | Render web service `board-secretariat-api` (`render.yaml`) | Runs `dist/index.js` (Express + tRPC). Verifies Firebase ID tokens and enforces board permissions and workflow rules. The website calls it cross-origin (`VITE_API_URL`), allowed by `ALLOWED_ORIGINS`. |
+| Persistence | Cloud Firestore (Native mode, `me-central2` Dammam) | Boards, memberships, requests, checklists, history, snapshots, attachment metadata. |
 | File bytes | Existing Forge/S3 storage | Unchanged; Firestore keeps metadata only. |
 
 The browser never reads or writes Firestore directly. All data access goes through the tRPC API using the Firebase Admin SDK, and `firestore.rules` denies every client request.
@@ -46,17 +46,32 @@ No composite indexes are required; every query uses equality filters only.
 | Variable | Where | Purpose |
 |---|---|---|
 | `FIREBASE_PROJECT_ID` | Server | Firebase project (`bssytem-27ee8`). |
-| `FIREBASE_SERVICE_ACCOUNT` | Server, optional | Service-account JSON (single line). Omit on Cloud Run to use the service identity. |
+| `FIREBASE_SERVICE_ACCOUNT` | Server | Service-account JSON. Required on Render; optional on Cloud Run (uses the service identity). |
+| `ALLOWED_ORIGINS` | Server | Website origins allowed to call the API. Defaults to the two Firebase Hosting domains. |
 | `ADMIN_EMAILS` | Server | Comma-separated administrator emails. |
-| `BUILT_IN_FORGE_API_URL`, `BUILT_IN_FORGE_API_KEY` | Server (Secret Manager) | File storage, unchanged. |
+| `BUILT_IN_FORGE_API_URL`, `BUILT_IN_FORGE_API_KEY` | Server (secret) | File storage, unchanged. |
 | `VITE_FIREBASE_API_KEY`, `VITE_FIREBASE_APP_ID` | Build time | Firebase web app config. |
+| `VITE_API_URL` | Build time | Public URL of the API server when it isn't on the website's domain (the Render URL). |
 | `VITE_FIREBASE_AUTH_DOMAIN`, `VITE_FIREBASE_PROJECT_ID` | Build time | Defaults to `bssytem-27ee8.firebaseapp.com` / `bssytem-27ee8`. |
 
 `.env.example` lists every variable for local development. The old `DATABASE_URL`, `JWT_SECRET`, `VITE_APP_ID`, `OAUTH_SERVER_URL`, `VITE_OAUTH_PORTAL_URL` and `OWNER_OPEN_ID` settings are no longer used.
 
 For GitHub Actions, add `VITE_FIREBASE_API_KEY` and `VITE_FIREBASE_APP_ID` as repository **variables** (Settings → Secrets and variables → Actions → Variables); `.github/workflows/firebase-deploy.yml` passes them to the build.
 
-## Deploy the backend (Cloud Run)
+## Deploy the API server (Render, recommended)
+
+1. **Service account key.** Firebase console → ⚙️ **Project settings** → **Service accounts** → **Generate new private key**. A JSON file downloads. Treat it like a password: never commit it or paste it into chats or issues.
+2. **Create the service.** Sign in at [render.com](https://render.com) with GitHub → **New** → **Blueprint** → choose `aamer5/BSSytem`. Render reads `render.yaml` and proposes the `board-secretariat-api` web service (Frankfurt, free plan).
+3. **Fill in the secret values** Render asks for:
+   - `FIREBASE_SERVICE_ACCOUNT`: open the downloaded JSON file and paste its entire contents.
+   - `ADMIN_EMAILS`: comma-separated administrator emails.
+   - `BUILT_IN_FORGE_API_URL`, `BUILT_IN_FORGE_API_KEY`: the existing file-storage values (attachments need them).
+4. Click **Apply**. When the deploy finishes, open `https://<your-service>.onrender.com/api/health`; it should show `{"ok":true}`.
+5. **Point the website at the API.** GitHub → repo **Settings** → **Secrets and variables** → **Actions** → **Variables** → add `VITE_API_URL` = the Render URL (for example `https://board-secretariat-api.onrender.com`, no trailing slash). Re-run the "Deploy to Firebase Hosting" workflow or push to `main`.
+
+Render redeploys the API automatically on every push to `main`. The free plan sleeps after a period of inactivity, so the first request afterwards can take up to about a minute; a paid instance stays awake. If you add a custom domain for the website, add it to `ALLOWED_ORIGINS` in Render.
+
+## Deploy the API on Cloud Run (alternative, needs Blaze)
 
 ```bash
 gcloud auth login
@@ -75,25 +90,21 @@ export ADMIN_EMAILS=you@example.com
 pnpm run cloudrun:deploy
 ```
 
-Cloud Run requires the Blaze (pay-as-you-go) plan. `--allow-unauthenticated` lets Firebase Hosting reach the service; every protected procedure still requires a verified Firebase ID token and board membership.
-
-## Deploy Hosting
-
-Once the Cloud Run service exists, route `/api/**` to it by adding this rewrite **before** the SPA fallback in `firebase.json`. Firebase Hosting only supports rewrites to Cloud Run in some regions; if `firebase deploy` rejects `me-central2`, see the note below.
+With Cloud Run you can either set `VITE_API_URL` to the Cloud Run URL (same as Render) or route `/api/**` through Hosting with a rewrite before the SPA fallback in `firebase.json`:
 
 ```json
 { "source": "/api/**", "run": { "serviceId": "board-secretariat-platform", "region": "me-central2" } }
 ```
 
-Then deploy:
+Firebase Hosting only supports Cloud Run rewrites in some regions; if it rejects `me-central2`, use `VITE_API_URL` instead.
+
+## Deploy Hosting
 
 ```bash
 pnpm run firebase:deploy
 ```
 
-Pushes to `main` also deploy Hosting through GitHub Actions.
-
-> **If Hosting rejects the `me-central2` rewrite:** keep Cloud Run and Firestore in Dammam and have the browser call the Cloud Run URL directly (the API authenticates with a Bearer token, not cookies, so this only needs a CORS allow-list for the Hosting domain), or put Cloud Run behind a custom domain / load balancer.
+Pushes to `main` also deploy Hosting through GitHub Actions, using the `VITE_FIREBASE_*` and `VITE_API_URL` repository variables.
 
 ## Migrating existing MySQL data
 

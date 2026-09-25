@@ -8,7 +8,8 @@ import type { TrpcContext } from "./_core/context";
 const emulated = Boolean(process.env.FIRESTORE_EMULATOR_HOST && process.env.FIREBASE_AUTH_EMULATOR_HOST);
 const projectId = process.env.GCLOUD_PROJECT ?? "demo-bssytem";
 
-describe.skipIf(!emulated)("Firestore + Firebase Auth (emulator)", () => {
+// Contention tests (concurrent sign-ins and id allocation) retry transactions, which is slow on the emulator.
+describe.skipIf(!emulated)("Firestore + Firebase Auth (emulator)", { timeout: 30_000 }, () => {
   let mod: {
     appRouter: typeof import("./routers").appRouter;
     authenticateRequest: typeof import("./_core/auth").authenticateRequest;

@@ -1,0 +1,30 @@
+# Render Blueprint for the API server (Express + tRPC). The website stays on
+# Firebase Hosting; Firestore and Firebase Auth stay on the Firebase Spark plan.
+# Render dashboard → New → Blueprint → pick this repo. Secrets marked
+# `sync: false` are entered in the dashboard and never committed.
+services:
+  - type: web
+    name: board-secretariat-api
+    runtime: node
+    region: frankfurt
+    plan: free
+    branch: main
+    buildCommand: corepack enable && pnpm install --frozen-lockfile && pnpm build:server
+    startCommand: pnpm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: FIREBASE_PROJECT_ID
+        value: bssytem-27ee8
+      - key: ALLOWED_ORIGINS
+        value: https://bssytem-27ee8.web.app,https://bssytem-27ee8.firebaseapp.com
+      # Firebase console → Project settings → Service accounts → Generate new private key; paste the whole JSON.
+      - key: FIREBASE_SERVICE_ACCOUNT
+        sync: false
+      - key: ADMIN_EMAILS
+        sync: false
+      - key: BUILT_IN_FORGE_API_URL
+        sync: false
+      - key: BUILT_IN_FORGE_API_KEY
+        sync: false
