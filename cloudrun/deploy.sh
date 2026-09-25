@@ -7,7 +7,8 @@ set -euo pipefail
 : "${ADMIN_EMAILS:?Set ADMIN_EMAILS to a comma-separated list of administrator emails}"
 
 SERVICE_NAME="${CLOUD_RUN_SERVICE:-board-secretariat-platform}"
-REGION="${CLOUD_RUN_REGION:-us-central1}"
+# Same region as the Firestore database (Dammam) to keep reads and writes local.
+REGION="${CLOUD_RUN_REGION:-me-central2}"
 AUTH_DOMAIN="${VITE_FIREBASE_AUTH_DOMAIN:-$FIREBASE_PROJECT_ID.firebaseapp.com}"
 
 # Firestore and Firebase Auth use the Cloud Run service identity (Application

@@ -28,7 +28,7 @@ In the [Firebase console](https://console.firebase.google.com/) for project `bss
 
 1. **Authentication → Sign-in method** → enable **Email/Password**.
 2. **Authentication → Settings → Authorized domains** → make sure the Hosting domain(s) and any custom domain are listed.
-3. **Firestore Database** → create a database in **Native mode** (pick the region closest to Cloud Run, e.g. `us-central1` / `nam5`).
+3. **Firestore Database** → create a database in **Native mode**. This project uses `me-central2` (Dammam); Cloud Run is deployed to the same region.
 4. **Project settings → Your apps** → add a **Web app** and copy `apiKey` and `appId`. These are public identifiers, not secrets.
 5. Optional: **Authentication → Templates** to customise the verification / password-reset emails (Arabic and English are sent according to the UI language).
 
@@ -79,10 +79,10 @@ Cloud Run requires the Blaze (pay-as-you-go) plan. `--allow-unauthenticated` let
 
 ## Deploy Hosting
 
-Once the Cloud Run service exists, route `/api/**` to it by adding this rewrite **before** the SPA fallback in `firebase.json`:
+Once the Cloud Run service exists, route `/api/**` to it by adding this rewrite **before** the SPA fallback in `firebase.json`. Firebase Hosting only supports rewrites to Cloud Run in some regions; if `firebase deploy` rejects `me-central2`, see the note below.
 
 ```json
-{ "source": "/api/**", "run": { "serviceId": "board-secretariat-platform", "region": "us-central1" } }
+{ "source": "/api/**", "run": { "serviceId": "board-secretariat-platform", "region": "me-central2" } }
 ```
 
 Then deploy:
@@ -92,6 +92,8 @@ pnpm run firebase:deploy
 ```
 
 Pushes to `main` also deploy Hosting through GitHub Actions.
+
+> **If Hosting rejects the `me-central2` rewrite:** keep Cloud Run and Firestore in Dammam and have the browser call the Cloud Run URL directly (the API authenticates with a Bearer token, not cookies, so this only needs a CORS allow-list for the Hosting domain), or put Cloud Run behind a custom domain / load balancer.
 
 ## Migrating existing MySQL data
 
