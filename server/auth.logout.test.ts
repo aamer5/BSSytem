@@ -15,10 +15,10 @@ function createAuthContext(): { ctx: TrpcContext; clearedCookies: CookieCall[] }
 
   const user: AuthenticatedUser = {
     id: 1,
-    openId: "sample-user",
+    firebaseUid: "sample-user",
     email: "sample@example.com",
     name: "Sample User",
-    loginMethod: "manus",
+    loginMethod: "password",
     role: "user",
     createdAt: new Date(),
     updatedAt: new Date(),

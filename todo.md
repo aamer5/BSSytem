@@ -49,3 +49,12 @@
 - [x] Add a production container/deployment definition for the Express/tRPC backend on Cloud Run.
 - [x] Document Firebase project setup, runtime secrets, Manus OAuth redirect configuration, database connectivity, and deployment order.
 - [x] Sync the Firebase Hosting and Cloud Run configuration to GitHub repository aamer5/BSSytem before requesting publish confirmation.
+
+## Firebase Firestore + Authentication migration
+
+- [x] Replace MySQL/Drizzle persistence with Cloud Firestore via the Firebase Admin SDK, keeping numeric ids, optimistic row versions, history and snapshots (transactional).
+- [x] Replace Manus OAuth with Firebase Authentication (email + password, email verification, password reset) and Bearer ID-token verification on the API.
+- [x] Promote `ADMIN_EMAILS` users to admin; link migrated MySQL users to Firebase accounts by verified email.
+- [x] Add the one-time `pnpm migrate:firestore` MySQL → Firestore script, deny-all Firestore rules, and emulator integration tests.
+- [ ] Enable Email/Password sign-in, create the Firestore database and web app in the Firebase console, and set `VITE_FIREBASE_API_KEY` / `VITE_FIREBASE_APP_ID`.
+- [ ] Run `pnpm migrate:firestore` against the production MySQL database, deploy Cloud Run, add the `/api/**` Hosting rewrite, and verify sign-in on the live domain.

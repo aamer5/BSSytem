@@ -14,6 +14,15 @@ jobs:
           node-version: 20
       - run: npm install --legacy-peer-deps
       - run: npm run build
+        env:
+          # Firebase web app config (public identifiers). Set these as GitHub
+          # repository variables: Settings > Secrets and variables > Actions > Variables.
+          VITE_FIREBASE_API_KEY: ${{ vars.VITE_FIREBASE_API_KEY }}
+          VITE_FIREBASE_APP_ID: ${{ vars.VITE_FIREBASE_APP_ID }}
+          VITE_FIREBASE_AUTH_DOMAIN: bssytem-27ee8.firebaseapp.com
+          VITE_FIREBASE_PROJECT_ID: bssytem-27ee8
+          # Public URL of the API server, e.g. https://board-secretariat-api.onrender.com
+          VITE_API_URL: ${{ vars.VITE_API_URL }}
       - uses: FirebaseExtended/action-hosting-deploy@v0
         with:
           repoToken: '${{ secrets.GITHUB_TOKEN }}'

@@ -2,27 +2,27 @@
 set -euo pipefail
 
 : "${FIREBASE_PROJECT_ID:?Set FIREBASE_PROJECT_ID to the Google/Firebase project ID}"
-: "${VITE_APP_ID:?Set VITE_APP_ID to the Manus OAuth application ID}"
-: "${VITE_OAUTH_PORTAL_URL:?Set VITE_OAUTH_PORTAL_URL to the Manus OAuth portal URL}"
+: "${VITE_FIREBASE_API_KEY:?Set VITE_FIREBASE_API_KEY from Firebase console > Project settings > Your apps}"
+: "${VITE_FIREBASE_APP_ID:?Set VITE_FIREBASE_APP_ID from Firebase console > Project settings > Your apps}"
+: "${ADMIN_EMAILS:?Set ADMIN_EMAILS to a comma-separated list of administrator emails}"
 
 SERVICE_NAME="${CLOUD_RUN_SERVICE:-board-secretariat-platform}"
-REGION="${CLOUD_RUN_REGION:-us-central1}"
+# Same region as the Firestore database (Dammam) to keep reads and writes local.
+REGION="${CLOUD_RUN_REGION:-me-central2}"
+AUTH_DOMAIN="${VITE_FIREBASE_AUTH_DOMAIN:-$FIREBASE_PROJECT_ID.firebaseapp.com}"
 
-# Runtime secrets are resolved by Cloud Run from Secret Manager. Create each
-# secret before running this script and grant the Cloud Run service identity
-# Secret Manager Secret Accessor for them.
+# Firestore and Firebase Auth use the Cloud Run service identity (Application
+# Default Credentials); grant it roles/datastore.user on the project. The "^;^"
+# prefix makes ";" the env-var separator so ADMIN_EMAILS may contain commas. Storage
+# secrets are resolved by Cloud Run from Secret Manager; create them first and
+# grant the service identity Secret Manager Secret Accessor.
 gcloud run deploy "$SERVICE_NAME" \
   --project "$FIREBASE_PROJECT_ID" \
   --source . \
   --region "$REGION" \
   --allow-unauthenticated \
-  --set-build-env-vars "VITE_APP_ID=$VITE_APP_ID,VITE_OAUTH_PORTAL_URL=$VITE_OAUTH_PORTAL_URL" \
-  --set-env-vars NODE_ENV=production \
+  --set-build-env-vars "VITE_FIREBASE_API_KEY=$VITE_FIREBASE_API_KEY,VITE_FIREBASE_AUTH_DOMAIN=$AUTH_DOMAIN,VITE_FIREBASE_PROJECT_ID=$FIREBASE_PROJECT_ID,VITE_FIREBASE_APP_ID=$VITE_FIREBASE_APP_ID" \
+  --set-env-vars "^;^NODE_ENV=production;FIREBASE_PROJECT_ID=$FIREBASE_PROJECT_ID;ADMIN_EMAILS=$ADMIN_EMAILS" \
   --set-secrets \
-    DATABASE_URL=DATABASE_URL:latest,\
-JWT_SECRET=JWT_SECRET:latest,\
-VITE_APP_ID=VITE_APP_ID:latest,\
-OAUTH_SERVER_URL=OAUTH_SERVER_URL:latest,\
-OWNER_OPEN_ID=OWNER_OPEN_ID:latest,\
-BUILT_IN_FORGE_API_URL=BUILT_IN_FORGE_API_URL:latest,\
+    BUILT_IN_FORGE_API_URL=BUILT_IN_FORGE_API_URL:latest,\
 BUILT_IN_FORGE_API_KEY=BUILT_IN_FORGE_API_KEY:latest
