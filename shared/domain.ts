@@ -34,3 +34,65 @@ export const priorityLabels: Record<Priority, Record<Locale, string>> = {
 export const confidentialityLabels: Record<ConfidentialityLevel, Record<Locale, string>> = {
   standard: { ar: "عادية", en: "Standard" }, restricted: { ar: "مقيدة", en: "Restricted" }, confidential: { ar: "سرية", en: "Confidential" },
 };
+
+// Labels for audit-history entries and the workflow buttons on the request page.
+export const actionLabels: Record<string, Record<Locale, string>> = {
+  create_draft: { ar: "إنشاء مسودة", en: "Draft created" },
+  submit: { ar: "تقديم الطلب", en: "Submit request" },
+  claim: { ar: "استلام للمراجعة", en: "Claim for review" },
+  release: { ar: "إعادة إلى قائمة الانتظار", en: "Release to queue" },
+  assign: { ar: "إسناد إلى عضو أمانة", en: "Assign to secretary" },
+  request_info: { ar: "طلب معلومات إضافية", en: "Request more information" },
+  respond_info: { ar: "إرسال المعلومات المطلوبة", en: "Send requested information" },
+  return_to_requester: { ar: "إعادة إلى مقدم الطلب", en: "Return to requester" },
+  return_to_secretary_member: { ar: "إعادة إلى عضو الأمانة", en: "Return to secretary" },
+  submit_to_board_head: { ar: "رفع إلى رئيس المجلس", en: "Send to board head" },
+  decide: { ar: "تسجيل القرار", en: "Record decision" },
+  withdraw: { ar: "سحب الطلب", en: "Withdraw request" },
+  archive: { ar: "أرشفة", en: "Archive" },
+};
+
+export const decisionReasonCodes = ["complete", "incomplete", "out_of_jurisdiction", "duplicate", "other"] as const;
+export const decisionReasonLabels: Record<(typeof decisionReasonCodes)[number], Record<Locale, string>> = {
+  complete: { ar: "مستوفٍ لجميع المتطلبات", en: "Meets all requirements" },
+  incomplete: { ar: "بيانات أو مستندات ناقصة", en: "Missing information or documents" },
+  out_of_jurisdiction: { ar: "خارج اختصاص المجلس", en: "Outside the board's mandate" },
+  duplicate: { ar: "موضوع مكرر", en: "Duplicate subject" },
+  other: { ar: "سبب آخر", en: "Other reason" },
+};
+
+// Messages for the translation keys the API returns as error messages.
+export const errorLabels: Record<string, Record<Locale, string>> = {
+  "errors.forbidden": { ar: "لا تملك صلاحية تنفيذ هذا الإجراء.", en: "You don't have permission to do this." },
+  "errors.notFound": { ar: "الطلب غير موجود.", en: "The request was not found." },
+  "errors.versionConflict": { ar: "حدّث مستخدم آخر هذا الطلب للتو. حدّث الصفحة وأعد المحاولة.", en: "Someone else just updated this request. Refresh and try again." },
+  "errors.claimConflict": { ar: "استلم مستخدم آخر هذا الطلب.", en: "Someone else has already claimed this request." },
+  "errors.invalidTransition": { ar: "لا يمكن تنفيذ هذا الإجراء في حالة الطلب الحالية.", en: "This action isn't possible in the request's current state." },
+  "errors.noteRequired": { ar: "أضف ملاحظة توضيحية قبل المتابعة.", en: "Add an explanatory note before continuing." },
+  "errors.invalidAssignee": { ar: "اختر شخصًا من أعضاء المجلس المؤهلين.", en: "Choose an eligible member of this board." },
+  "errors.membershipExists": { ar: "هذه العضوية موجودة ومفعّلة بالفعل.", en: "This membership already exists and is active." },
+  "errors.validationFailed": { ar: "تحقق من البيانات المدخلة.", en: "Please check the information you entered." },
+  "errors.invalidAnswer": { ar: "الإجابة لا تناسب نوع السؤال.", en: "That answer doesn't fit the question type." },
+  "errors.checklistIncomplete": { ar: "أجب عن جميع أسئلة قائمة التحقق الإلزامية قبل الإرسال.", en: "Answer every required checklist question before submitting." },
+  "errors.questionNotOnChecklist": { ar: "هذا السؤال ليس ضمن قائمة التحقق لهذا الطلب.", en: "This question isn't part of this request's checklist." },
+  "errors.templateNotDraft": { ar: "لا يمكن تعديل إلا القوالب في حالة المسودة. أنشئ نسخة جديدة للتعديل.", en: "Only draft templates can be changed. Create a new version to edit it." },
+  "errors.templateHasNoQuestions": { ar: "أضف سؤالًا واحدًا على الأقل قبل تفعيل القالب.", en: "Add at least one question before activating the template." },
+  "errors.optionsRequired": { ar: "أضف خيارين على الأقل لسؤال الاختيار.", en: "Add at least two options for a choice question." },
+  "errors.questionCodeExists": { ar: "رمز السؤال مستخدم في هذا القالب.", en: "That question code is already used in this template." },
+};
+
+export const answerTypeLabels: Record<ChecklistAnswerType, Record<Locale, string>> = {
+  text: { ar: "نص قصير", en: "Short text" },
+  long_text: { ar: "نص طويل", en: "Long text" },
+  numeric: { ar: "رقم", en: "Number" },
+  boolean: { ar: "نعم / لا", en: "Yes / No" },
+  single_select: { ar: "اختيار واحد", en: "Single choice" },
+  multi_select: { ar: "اختيار متعدد", en: "Multiple choice" },
+  document_linked: { ar: "مرتبط بمستند", en: "Document reference" },
+};
+
+export const templateStatusLabels: Record<"draft" | "active" | "retired", Record<Locale, string>> = {
+  draft: { ar: "مسودة", en: "Draft" },
+  active: { ar: "مفعّل", en: "Active" },
+  retired: { ar: "موقوف", en: "Retired" },
+};
