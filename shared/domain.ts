@@ -38,6 +38,7 @@ export const confidentialityLabels: Record<ConfidentialityLevel, Record<Locale, 
 // Labels for audit-history entries and the workflow buttons on the request page.
 export const actionLabels: Record<string, Record<Locale, string>> = {
   create_draft: { ar: "إنشاء مسودة", en: "Draft created" },
+  edit_draft: { ar: "تعديل المسودة", en: "Draft edited" },
   submit: { ar: "تقديم الطلب", en: "Submit request" },
   claim: { ar: "استلام للمراجعة", en: "Claim for review" },
   release: { ar: "إعادة إلى قائمة الانتظار", en: "Release to queue" },
@@ -78,6 +79,9 @@ export const errorLabels: Record<string, Record<Locale, string>> = {
   "errors.templateNotDraft": { ar: "لا يمكن تعديل إلا القوالب في حالة المسودة. أنشئ نسخة جديدة للتعديل.", en: "Only draft templates can be changed. Create a new version to edit it." },
   "errors.templateHasNoQuestions": { ar: "أضف سؤالًا واحدًا على الأقل قبل تفعيل القالب.", en: "Add at least one question before activating the template." },
   "errors.optionsRequired": { ar: "أضف خيارين على الأقل لسؤال الاختيار.", en: "Add at least two options for a choice question." },
+  "errors.fileEmpty": { ar: "الملف فارغ.", en: "The file is empty." },
+  "errors.fileTooLarge": { ar: "حجم الملف أكبر من 10 ميجابايت.", en: "The file is larger than 10 MB." },
+  "errors.fileUnavailable": { ar: "هذا الملف غير متاح. ربما رُفع قبل نقل النظام؛ اطلب رفعه من جديد.", en: "This file isn't available. It may have been uploaded before the system moved; ask for it to be uploaded again." },
   "errors.questionCodeExists": { ar: "رمز السؤال مستخدم في هذا القالب.", en: "That question code is already used in this template." },
 };
 

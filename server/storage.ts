@@ -1,97 +1,47 @@
-// Preconfigured storage helpers for Manus WebDev templates
-// Uploads via Forge Server presigned URL to S3 (PUT direct).
-// Downloads return /manus-storage/{key} paths served via 307 redirect.
+// Attachment files are kept in Firestore, split into chunks below the 1 MiB
+// document limit. This works on the free Spark plan, where Cloud Storage
+// buckets are not available.
+import { createHash, randomUUID } from "node:crypto";
+import { col, COLLECTIONS, getDb } from "./firestore";
+import { DomainError } from "./domain/errors";
 
-import { ENV } from "./_core/env";
+export const MAX_FILE_BYTES = 10 * 1024 * 1024;
+const CHUNK_BYTES = 700 * 1024;
+const KEY_PREFIX = "firestore:";
 
-function getForgeConfig() {
-  const forgeUrl = ENV.forgeApiUrl;
-  const forgeKey = ENV.forgeApiKey;
+const chunkId = (key: string, index: number) => `${key.slice(KEY_PREFIX.length)}_${index}`;
 
-  if (!forgeUrl || !forgeKey) {
-    throw new Error(
-      "Storage config missing: set BUILT_IN_FORGE_API_URL and BUILT_IN_FORGE_API_KEY",
-    );
+export async function storeFile(data: Buffer) {
+  if (data.byteLength === 0) throw new DomainError("VALIDATION_FAILED", "errors.fileEmpty");
+  if (data.byteLength > MAX_FILE_BYTES) throw new DomainError("VALIDATION_FAILED", "errors.fileTooLarge");
+  const key = `${KEY_PREFIX}${randomUUID()}`;
+  const chunks = Math.ceil(data.byteLength / CHUNK_BYTES);
+  try {
+    // One chunk per batch keeps each write well under Firestore's request size limit.
+    for (let index = 0; index < chunks; index++) {
+      await col(COLLECTIONS.attachmentChunks).doc(chunkId(key, index)).set({ storageKey: key, index, chunks, data: data.subarray(index * CHUNK_BYTES, (index + 1) * CHUNK_BYTES) });
+    }
+  } catch (error) {
+    await deleteFile(key).catch(() => undefined);
+    throw error;
   }
-
-  return { forgeUrl: forgeUrl.replace(/\/+$/, ""), forgeKey };
+  return { key, byteSize: data.byteLength, checksumSha256: createHash("sha256").update(data).digest("hex") };
 }
 
-function normalizeKey(relKey: string): string {
-  return relKey.replace(/^\/+/, "");
-}
-
-function appendHashSuffix(relKey: string): string {
-  const hash = crypto.randomUUID().replace(/-/g, "").slice(0, 8);
-  const lastDot = relKey.lastIndexOf(".");
-  if (lastDot === -1) return `${relKey}_${hash}`;
-  return `${relKey.slice(0, lastDot)}_${hash}${relKey.slice(lastDot)}`;
-}
-
-export async function storagePut(
-  relKey: string,
-  data: Buffer | Uint8Array | string,
-  contentType = "application/octet-stream",
-): Promise<{ key: string; url: string }> {
-  const { forgeUrl, forgeKey } = getForgeConfig();
-  const key = appendHashSuffix(normalizeKey(relKey));
-
-  // 1. Get presigned PUT URL from Forge
-  const presignUrl = new URL("v1/storage/presign/put", forgeUrl + "/");
-  presignUrl.searchParams.set("path", key);
-
-  const presignResp = await fetch(presignUrl, {
-    headers: { Authorization: `Bearer ${forgeKey}` },
+export async function readFile(key: string) {
+  if (!key.startsWith(KEY_PREFIX)) throw new DomainError("NOT_FOUND", "errors.fileUnavailable");
+  const first = await col(COLLECTIONS.attachmentChunks).doc(chunkId(key, 0)).get();
+  if (!first.exists) throw new DomainError("NOT_FOUND", "errors.fileUnavailable");
+  const count = Number(first.get("chunks"));
+  const rest = count > 1 ? await getDb().getAll(...Array.from({ length: count - 1 }, (_, i) => col(COLLECTIONS.attachmentChunks).doc(chunkId(key, i + 1)))) : [];
+  const parts = [first, ...rest].map(doc => {
+    if (!doc.exists) throw new DomainError("NOT_FOUND", "errors.fileUnavailable");
+    return Buffer.from(doc.get("data") as Uint8Array);
   });
-
-  if (!presignResp.ok) {
-    const msg = await presignResp.text().catch(() => presignResp.statusText);
-    throw new Error(`Storage presign failed (${presignResp.status}): ${msg}`);
-  }
-
-  const { url: s3Url } = (await presignResp.json()) as { url: string };
-  if (!s3Url) throw new Error("Forge returned empty presign URL");
-
-  // 2. PUT file directly to S3
-  const blob =
-    typeof data === "string"
-      ? new Blob([data], { type: contentType })
-      : new Blob([data as any], { type: contentType });
-
-  const uploadResp = await fetch(s3Url, {
-    method: "PUT",
-    headers: { "Content-Type": contentType },
-    body: blob,
-  });
-
-  if (!uploadResp.ok) {
-    throw new Error(`Storage upload to S3 failed (${uploadResp.status})`);
-  }
-
-  return { key, url: `/manus-storage/${key}` };
+  return Buffer.concat(parts);
 }
 
-export async function storageGet(relKey: string): Promise<{ key: string; url: string }> {
-  const key = normalizeKey(relKey);
-  return { key, url: `/manus-storage/${key}` };
-}
-
-export async function storageGetSignedUrl(relKey: string): Promise<string> {
-  const { forgeUrl, forgeKey } = getForgeConfig();
-  const key = normalizeKey(relKey);
-
-  const getUrl = new URL("v1/storage/presign/get", forgeUrl + "/");
-  getUrl.searchParams.set("path", key);
-
-  const resp = await fetch(getUrl, {
-    headers: { Authorization: `Bearer ${forgeKey}` },
-  });
-
-  if (!resp.ok) {
-    const msg = await resp.text().catch(() => resp.statusText);
-    throw new Error(`Storage signed URL failed (${resp.status}): ${msg}`);
-  }
-
-  const { url } = (await resp.json()) as { url: string };
-  return url;
+export async function deleteFile(key: string) {
+  const docs = await col(COLLECTIONS.attachmentChunks).where("storageKey", "==", key).get();
+  await Promise.all(docs.docs.map(doc => doc.ref.delete()));
 }

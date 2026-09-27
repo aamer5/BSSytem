@@ -8,7 +8,7 @@ The website, sign-in and database run on Firebase's free **Spark** plan. The API
 | Sign-in | Firebase Authentication (Email/Password) | Registration, sign-in, email verification and password reset in the browser. |
 | API | Render web service `board-secretariat-api` (`render.yaml`) | Runs `dist/index.js` (Express + tRPC). Verifies Firebase ID tokens and enforces board permissions and workflow rules. The website calls it cross-origin (`VITE_API_URL`), allowed by `ALLOWED_ORIGINS`. |
 | Persistence | Cloud Firestore (Native mode, `me-central2` Dammam) | Boards, memberships, requests, checklists, history, snapshots, attachment metadata. |
-| File bytes | Existing Forge/S3 storage | Unchanged; Firestore keeps metadata only. |
+| File bytes | Cloud Firestore (`attachment_chunks`) | Uploaded files (up to 10 MB) are split into chunks below Firestore's 1 MiB document limit, so no Cloud Storage bucket or paid plan is needed. |
 
 The browser never reads or writes Firestore directly. All data access goes through the tRPC API using the Firebase Admin SDK, and `firestore.rules` denies every client request.
 
@@ -49,12 +49,11 @@ No composite indexes are required; every query uses equality filters only.
 | `FIREBASE_SERVICE_ACCOUNT` | Server | Service-account JSON. Required on Render; optional on Cloud Run (uses the service identity). |
 | `ALLOWED_ORIGINS` | Server | Website origins allowed to call the API. Defaults to the two Firebase Hosting domains. |
 | `ADMIN_EMAILS` | Server | Comma-separated administrator emails. |
-| `BUILT_IN_FORGE_API_URL`, `BUILT_IN_FORGE_API_KEY` | Server (secret) | File storage, unchanged. |
 | `VITE_FIREBASE_API_KEY`, `VITE_FIREBASE_APP_ID` | Build time | Firebase web app config. |
 | `VITE_API_URL` | Build time | Public URL of the API server when it isn't on the website's domain (the Render URL). |
 | `VITE_FIREBASE_AUTH_DOMAIN`, `VITE_FIREBASE_PROJECT_ID` | Build time | Defaults to `bssytem-27ee8.firebaseapp.com` / `bssytem-27ee8`. |
 
-`.env.example` lists every variable for local development. The old `DATABASE_URL`, `JWT_SECRET`, `VITE_APP_ID`, `OAUTH_SERVER_URL`, `VITE_OAUTH_PORTAL_URL` and `OWNER_OPEN_ID` settings are no longer used.
+`.env.example` lists every variable for local development. The old `DATABASE_URL`, `JWT_SECRET`, `VITE_APP_ID`, `OAUTH_SERVER_URL`, `VITE_OAUTH_PORTAL_URL`, `OWNER_OPEN_ID`, `BUILT_IN_FORGE_API_URL` and `BUILT_IN_FORGE_API_KEY` settings are no longer used.
 
 For GitHub Actions, add `VITE_FIREBASE_API_KEY` and `VITE_FIREBASE_APP_ID` as repository **variables** (Settings → Secrets and variables → Actions → Variables); `.github/workflows/firebase-deploy.yml` passes them to the build.
 
@@ -65,7 +64,6 @@ For GitHub Actions, add `VITE_FIREBASE_API_KEY` and `VITE_FIREBASE_APP_ID` as re
 3. **Fill in the secret values** Render asks for:
    - `FIREBASE_SERVICE_ACCOUNT`: open the downloaded JSON file and paste its entire contents.
    - `ADMIN_EMAILS`: comma-separated administrator emails.
-   - `BUILT_IN_FORGE_API_URL`, `BUILT_IN_FORGE_API_KEY`: the existing file-storage values (attachments need them).
 4. Click **Apply**. When the deploy finishes, open `https://<your-service>.onrender.com/api/health`; it should show `{"ok":true}`.
 5. **Point the website at the API.** GitHub → repo **Settings** → **Secrets and variables** → **Actions** → **Variables** → add `VITE_API_URL` = the Render URL (for example `https://board-secretariat-api.onrender.com`, no trailing slash). Re-run the "Deploy to Firebase Hosting" workflow or push to `main`.
 

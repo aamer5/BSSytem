@@ -20,6 +20,7 @@ export const COLLECTIONS = {
   requestHistory: "request_history",
   requestSnapshots: "request_snapshots",
   requestAttachments: "request_attachments",
+  attachmentChunks: "attachment_chunks",
 } as const;
 export type CollectionName = (typeof COLLECTIONS)[keyof typeof COLLECTIONS];
 const COUNTERS = "_counters";

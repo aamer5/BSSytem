@@ -24,7 +24,3 @@ services:
         sync: false
       - key: ADMIN_EMAILS
         sync: false
-      - key: BUILT_IN_FORGE_API_URL
-        sync: false
-      - key: BUILT_IN_FORGE_API_KEY
-        sync: false
