@@ -83,13 +83,13 @@ describe.skipIf(!emulated)("Firestore + Firebase Auth (emulator)", { timeout: 30
     const { id: specialtyId } = await asAdmin.admin.createSpecialty({ boardId, code: "BUD", nameAr: "الميزانية" });
     await asAdmin.admin.assignMembership({ boardId, userId: requester.id, role: "requester" });
     const { id: secretaryMembership } = await asAdmin.admin.assignMembership({ boardId, userId: secretary.id, role: "secretary_member" });
-    await expect(asAdmin.admin.assignMembership({ boardId, userId: requester.id, role: "requester" })).rejects.toThrow("Membership already exists");
+    await expect(asAdmin.admin.assignMembership({ boardId, userId: requester.id, role: "requester" })).rejects.toThrow("errors.membershipExists");
 
     const draft = await callerFor(requester).requests.createDraft({ boardId, specialtyId, title: "Budget review", subjectType: "financial", priority: "high", confidentialityLevel: "standard" });
     expect(draft.referenceNumber).toMatch(/^SR-\d{4}-/);
     await expect(callerFor(outsider).requests.createDraft({ boardId, specialtyId, title: "Nope", subjectType: "general", priority: "low", confidentialityLevel: "standard" })).rejects.toThrow();
 
-    await expect(callerFor(requester).requests.submit({ requestId: draft.id, expectedRowVersion: 99, locale: "en" })).rejects.toThrow("Version conflict");
+    await expect(callerFor(requester).requests.submit({ requestId: draft.id, expectedRowVersion: 99, locale: "en" })).rejects.toMatchObject({ code: "CONFLICT", message: "errors.versionConflict" });
     const submitted = await callerFor(requester).requests.submit({ requestId: draft.id, expectedRowVersion: 1, locale: "en" });
     expect(submitted.rowVersion).toBe(2);
     const claimed = await callerFor(secretary).requests.claim({ requestId: draft.id, expectedRowVersion: 2, locale: "en" });
@@ -116,6 +116,55 @@ describe.skipIf(!emulated)("Firestore + Firebase Auth (emulator)", { timeout: 30
     await asAdmin.admin.deactivateMembership({ membershipId: secretaryMembership });
     await expect(callerFor(secretary).requests.detail({ requestId: draft.id, locale: "en" })).resolves.toBeNull();
     expect((await callerFor(secretary).reference.list({ locale: "en" })).boards).toEqual([]);
+  });
+
+  it("walks a request through every workflow step with role and ownership checks", async () => {
+    const admin = (await signIn("chief@example.com"))!;
+    const [requester, other, head, secretary, boardHead] = await Promise.all(["req@example.com", "other@example.com", "head@example.com", "sec@example.com", "bh@example.com"].map(email => signIn(email))).then(users => users.map(user => user!));
+    const asAdmin = callerFor(admin);
+    const { id: boardId } = await asAdmin.admin.createBoard({ code: "GOV", nameAr: "الحوكمة" });
+    const { id: specialtyId } = await asAdmin.admin.createSpecialty({ boardId, code: "POL", nameAr: "السياسات" });
+    for (const [userId, role] of [[requester.id, "requester"], [other.id, "requester"], [head.id, "secretariat_head"], [secretary.id, "secretary_member"], [boardHead.id, "board_head"]] as const) await asAdmin.admin.assignMembership({ boardId, userId, role });
+    expect((await asAdmin.admin.memberships()).filter(m => m.boardId === boardId)).toHaveLength(5);
+
+    const { id } = await callerFor(requester).requests.createDraft({ boardId, specialtyId, title: "Policy update", subjectType: "policy", priority: "normal", confidentialityLevel: "standard" });
+    const detailFor = async (user: typeof requester) => (await callerFor(user).requests.detail({ requestId: id, locale: "en" }))!;
+    const version = async () => (await detailFor(admin)).request.rowVersion;
+
+    expect((await detailFor(requester)).permissions.actions).toEqual(["submit", "withdraw"]);
+    expect((await detailFor(other)).permissions.actions).toEqual([]);
+    await expect(callerFor(other).requests.submit({ requestId: id, expectedRowVersion: 1, locale: "en" })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await callerFor(requester).requests.submit({ requestId: id, expectedRowVersion: 1, locale: "en" });
+
+    const headView = await detailFor(head);
+    expect(headView.permissions.actions).toEqual(["claim", "assign"]);
+    expect(headView.candidates.secretaries.map(c => c.id).sort()).toEqual([head.id, secretary.id].sort());
+    await expect(callerFor(head).requests.transition({ requestId: id, action: "assign", assigneeUserId: requester.id, expectedRowVersion: 2, locale: "en" })).rejects.toMatchObject({ message: "errors.invalidAssignee" });
+    await callerFor(head).requests.transition({ requestId: id, action: "assign", assigneeUserId: secretary.id, expectedRowVersion: 2, locale: "en" });
+
+    await expect(callerFor(secretary).requests.transition({ requestId: id, action: "request_info", expectedRowVersion: await version(), locale: "en" })).rejects.toMatchObject({ message: "errors.noteRequired" });
+    await callerFor(secretary).requests.transition({ requestId: id, action: "request_info", note: "Please attach the budget", expectedRowVersion: await version(), locale: "en" });
+    expect((await detailFor(requester)).permissions.actions).toEqual(["respond_info", "withdraw"]);
+    await callerFor(requester).requests.transition({ requestId: id, action: "respond_info", note: "Attached", expectedRowVersion: await version(), locale: "en" });
+    expect((await detailFor(admin)).request).toMatchObject({ lifecycleStatus: "under_secretariat_review", currentAssigneeId: secretary.id });
+
+    await expect(callerFor(secretary).requests.transition({ requestId: id, action: "submit_to_board_head", assigneeUserId: boardHead.id, expectedRowVersion: await version(), locale: "en" })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await callerFor(head).requests.transition({ requestId: id, action: "submit_to_board_head", assigneeUserId: boardHead.id, expectedRowVersion: await version(), locale: "en" });
+    expect((await detailFor(boardHead)).permissions.actions).toEqual(["decide"]);
+    await expect(callerFor(admin).requests.decide({ requestId: id, outcome: "proper", reasonCode: "complete", note: "ok", expectedRowVersion: await version(), locale: "en" })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await callerFor(boardHead).requests.decide({ requestId: id, outcome: "proper", reasonCode: "complete", note: "Meets all criteria", requesterVisible: true, expectedRowVersion: await version(), locale: "en" });
+    await callerFor(head).requests.transition({ requestId: id, action: "archive", expectedRowVersion: await version(), locale: "en" });
+
+    const final = await detailFor(admin);
+    expect(final.request).toMatchObject({ lifecycleStatus: "archived", workStatus: "completed", boardHeadOutcome: "proper" });
+    expect(final.history.map(h => h.action).reverse()).toEqual(["create_draft", "submit", "assign", "request_info", "respond_info", "submit_to_board_head", "decide", "archive"]);
+    expect(final.history.find(h => h.action === "request_info")?.note).toBe("Please attach the budget");
+    expect(final.decisions).toHaveLength(1);
+    expect(final.permissions.actions).toEqual([]);
+
+    const membership = (await asAdmin.admin.memberships()).find(m => m.userId === other.id)!;
+    await asAdmin.admin.deactivateMembership({ membershipId: membership.id });
+    await expect(asAdmin.admin.assignMembership({ boardId, userId: other.id, role: "requester" })).resolves.toMatchObject({ id: membership.id, reactivated: true });
   });
 
   it("allocates unique ids under concurrent inserts", async () => {
