@@ -96,16 +96,14 @@ describe.skipIf(!emulated)("Firestore + Firebase Auth (emulator)", { timeout: 30
     expect(claimed.rowVersion).toBe(3);
     await expect(callerFor(secretary).requests.claim({ requestId: draft.id, expectedRowVersion: 3, locale: "en" })).rejects.toThrow();
 
-    await callerFor(requester).requests.answerChecklist({ requestId: draft.id, checklistQuestionId: 7, answerValue: "first", finalConfirmation: false, locale: "en" });
-    await callerFor(requester).requests.answerChecklist({ requestId: draft.id, checklistQuestionId: 7, answerValue: "second", finalConfirmation: true, locale: "en" });
+    await expect(callerFor(requester).requests.answerChecklist({ requestId: draft.id, checklistQuestionId: 7, answerValue: "first", finalConfirmation: false, locale: "en" })).rejects.toThrow("errors.questionNotOnChecklist");
 
     const detail = await callerFor(secretary).requests.detail({ requestId: draft.id, locale: "en" });
     expect(detail?.request).toMatchObject({ lifecycleStatus: "under_secretariat_review", workStatus: "assigned", currentAssigneeId: secretary.id, rowVersion: 3 });
     expect(detail?.requester.email).toBe("requester@example.com");
     expect(detail?.history.map(entry => entry.action)).toEqual(["claim", "submit", "create_draft"]);
     expect(detail?.snapshots).toHaveLength(1);
-    expect(detail?.answers).toHaveLength(1);
-    expect(detail?.answers[0]).toMatchObject({ answerValue: "second", finalConfirmation: true });
+    expect(detail?.answers).toHaveLength(0);
     await expect(callerFor(outsider).requests.detail({ requestId: draft.id, locale: "en" })).resolves.toBeNull();
 
     const list = await callerFor(secretary).requests.list({ locale: "en", search: "BUDGET", page: 1, pageSize: 20, requestedByMe: false, assignedToMe: true });
@@ -116,6 +114,59 @@ describe.skipIf(!emulated)("Firestore + Firebase Auth (emulator)", { timeout: 30
     await asAdmin.admin.deactivateMembership({ membershipId: secretaryMembership });
     await expect(callerFor(secretary).requests.detail({ requestId: draft.id, locale: "en" })).resolves.toBeNull();
     expect((await callerFor(secretary).reference.list({ locale: "en" })).boards).toEqual([]);
+  });
+
+  it("versions and activates checklist templates and enforces required answers", async () => {
+    const admin = (await signIn("chief@example.com"))!;
+    const [requester, other] = await Promise.all([signIn("req@example.com"), signIn("other@example.com")]).then(users => users.map(user => user!));
+    const asAdmin = callerFor(admin);
+    const asRequester = callerFor(requester);
+    const { id: boardId } = await asAdmin.admin.createBoard({ code: "HR", nameAr: "الموارد" });
+    const { id: specialtyId } = await asAdmin.admin.createSpecialty({ boardId, code: "PAY", nameAr: "الرواتب" });
+    const { id: otherSpecialty } = await asAdmin.admin.createSpecialty({ boardId, code: "HIR", nameAr: "التوظيف" });
+    for (const user of [requester, other]) await asAdmin.admin.assignMembership({ boardId, userId: user.id, role: "requester" });
+
+    // A board-wide template with typed questions.
+    const { id: boardWide } = await asAdmin.admin.createTemplate({ boardId, nameAr: "عام" });
+    await expect(asAdmin.admin.activateTemplate({ templateId: boardWide })).rejects.toThrow("errors.templateHasNoQuestions");
+    await expect(asAdmin.admin.createQuestion({ checklistTemplateId: boardWide, textAr: "النوع", answerType: "single_select", options: ["أ"] })).rejects.toThrow("errors.optionsRequired");
+    const { id: approved } = await asAdmin.admin.createQuestion({ checklistTemplateId: boardWide, textAr: "هل اعتمد المدير؟", answerType: "boolean", required: true });
+    const { id: amount } = await asAdmin.admin.createQuestion({ checklistTemplateId: boardWide, textAr: "المبلغ", answerType: "numeric", required: true });
+    const { id: kind } = await asAdmin.admin.createQuestion({ checklistTemplateId: boardWide, textAr: "النوع", answerType: "single_select", options: ["جديد", "تجديد"] });
+    await asAdmin.admin.activateTemplate({ templateId: boardWide });
+    await expect(asAdmin.admin.createQuestion({ checklistTemplateId: boardWide, textAr: "متأخر", answerType: "text" })).rejects.toThrow("errors.templateNotDraft");
+
+    // A specialty template wins over the board-wide one; a second version retires the first when activated.
+    const { id: payV1 } = await asAdmin.admin.createTemplate({ boardId, specialtyId, nameAr: "الرواتب" });
+    await asAdmin.admin.createQuestion({ checklistTemplateId: payV1, textAr: "سؤال", answerType: "text" });
+    await asAdmin.admin.activateTemplate({ templateId: payV1 });
+    const { id: payV2 } = await asAdmin.admin.newTemplateVersion({ templateId: payV1 });
+    await asAdmin.admin.activateTemplate({ templateId: payV2 });
+    const templates = await asAdmin.admin.checklists();
+    expect(templates.filter(t => t.specialtyId === specialtyId).map(t => [t.version, t.status, t.questions.length])).toEqual([[2, "active", 1], [1, "retired", 1]]);
+    expect(templates.find(t => t.id === boardWide)?.questions.map(q => q.code)).toEqual(["Q1", "Q2", "Q3"]);
+
+    const payDraft = await asRequester.requests.createDraft({ boardId, specialtyId, title: "Payroll change", subjectType: "general", priority: "normal", confidentialityLevel: "standard" });
+    expect((await asRequester.requests.detail({ requestId: payDraft.id, locale: "en" }))?.request.checklistTemplateId).toBe(payV2);
+
+    const draft = await asRequester.requests.createDraft({ boardId, specialtyId: otherSpecialty, title: "New hire", subjectType: "general", priority: "normal", confidentialityLevel: "standard" });
+    const detail = await asRequester.requests.detail({ requestId: draft.id, locale: "en" });
+    expect(detail?.template?.id).toBe(boardWide);
+    expect(detail?.questions.map(q => q.id)).toEqual([approved, amount, kind]);
+    expect(detail?.permissions).toMatchObject({ canAnswerChecklist: true, canUpload: true });
+    expect((await callerFor(other).requests.detail({ requestId: draft.id, locale: "en" }))?.permissions.canAnswerChecklist).toBe(false);
+
+    const answer = (checklistQuestionId: number, answerValue: string | number | boolean | null, caller = asRequester) => caller.requests.answerChecklist({ requestId: draft.id, checklistQuestionId, answerValue, finalConfirmation: true, locale: "en" });
+    await expect(answer(approved, true, callerFor(other))).rejects.toThrow("errors.forbidden");
+    await expect(answer(amount, "lots")).rejects.toThrow("errors.invalidAnswer");
+    await expect(answer(kind, "other")).rejects.toThrow("errors.invalidAnswer");
+    await answer(approved, true);
+    await expect(asRequester.requests.submit({ requestId: draft.id, expectedRowVersion: 1, locale: "en" })).rejects.toMatchObject({ code: "BAD_REQUEST", message: "errors.checklistIncomplete" });
+    await answer(amount, "2500");
+    const saved = await asRequester.requests.detail({ requestId: draft.id, locale: "en" });
+    expect(saved?.answers.find(a => a.checklistQuestionId === amount)?.answerValue).toBe(2500);
+    await asRequester.requests.submit({ requestId: draft.id, expectedRowVersion: 1, locale: "en" });
+    await expect(answer(kind, "جديد")).rejects.toThrow("errors.invalidTransition");
   });
 
   it("walks a request through every workflow step with role and ownership checks", async () => {

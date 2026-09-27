@@ -43,3 +43,15 @@ export function checkAction(ctx: ActionContext, action: WorkflowAction) {
 export function availableActions(ctx: ActionContext): WorkflowAction[] {
   return workflowActions.filter(action => { try { checkAction(ctx, action); return true; } catch { return false; } });
 }
+
+// Editing actions on a request (checklist answers, uploads). A requester may only edit their own request.
+export function checkRequestEdit(ctx: ActionContext, action: "answer_checklist" | "upload_attachment") {
+  const actorRole = authorizeAction(ctx.roles, action, ctx.isAdmin);
+  if (actorRole === "requester" && ctx.requesterUserId !== ctx.userId) throw forbidden();
+  assertLifecycle(ctx.state, action);
+  return actorRole;
+}
+
+export function canEditRequest(ctx: ActionContext, action: "answer_checklist" | "upload_attachment") {
+  try { checkRequestEdit(ctx, action); return true; } catch { return false; }
+}

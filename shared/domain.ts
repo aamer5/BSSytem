@@ -72,4 +72,27 @@ export const errorLabels: Record<string, Record<Locale, string>> = {
   "errors.invalidAssignee": { ar: "اختر شخصًا من أعضاء المجلس المؤهلين.", en: "Choose an eligible member of this board." },
   "errors.membershipExists": { ar: "هذه العضوية موجودة ومفعّلة بالفعل.", en: "This membership already exists and is active." },
   "errors.validationFailed": { ar: "تحقق من البيانات المدخلة.", en: "Please check the information you entered." },
+  "errors.invalidAnswer": { ar: "الإجابة لا تناسب نوع السؤال.", en: "That answer doesn't fit the question type." },
+  "errors.checklistIncomplete": { ar: "أجب عن جميع أسئلة قائمة التحقق الإلزامية قبل الإرسال.", en: "Answer every required checklist question before submitting." },
+  "errors.questionNotOnChecklist": { ar: "هذا السؤال ليس ضمن قائمة التحقق لهذا الطلب.", en: "This question isn't part of this request's checklist." },
+  "errors.templateNotDraft": { ar: "لا يمكن تعديل إلا القوالب في حالة المسودة. أنشئ نسخة جديدة للتعديل.", en: "Only draft templates can be changed. Create a new version to edit it." },
+  "errors.templateHasNoQuestions": { ar: "أضف سؤالًا واحدًا على الأقل قبل تفعيل القالب.", en: "Add at least one question before activating the template." },
+  "errors.optionsRequired": { ar: "أضف خيارين على الأقل لسؤال الاختيار.", en: "Add at least two options for a choice question." },
+  "errors.questionCodeExists": { ar: "رمز السؤال مستخدم في هذا القالب.", en: "That question code is already used in this template." },
+};
+
+export const answerTypeLabels: Record<ChecklistAnswerType, Record<Locale, string>> = {
+  text: { ar: "نص قصير", en: "Short text" },
+  long_text: { ar: "نص طويل", en: "Long text" },
+  numeric: { ar: "رقم", en: "Number" },
+  boolean: { ar: "نعم / لا", en: "Yes / No" },
+  single_select: { ar: "اختيار واحد", en: "Single choice" },
+  multi_select: { ar: "اختيار متعدد", en: "Multiple choice" },
+  document_linked: { ar: "مرتبط بمستند", en: "Document reference" },
+};
+
+export const templateStatusLabels: Record<"draft" | "active" | "retired", Record<Locale, string>> = {
+  draft: { ar: "مسودة", en: "Draft" },
+  active: { ar: "مفعّل", en: "Active" },
+  retired: { ar: "موقوف", en: "Retired" },
 };

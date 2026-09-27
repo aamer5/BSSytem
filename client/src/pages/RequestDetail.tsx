@@ -1,4 +1,5 @@
 import { ApiErrorState } from "@/components/ApiErrorState";
+import { ChecklistForm } from "@/components/ChecklistForm";
 import { WorkflowActions } from "@/components/WorkflowActions";
 import { useLocale } from "@/contexts/LocaleContext";
 import { describeApiError } from "@/lib/errors";
@@ -27,15 +28,6 @@ export default function RequestDetail() {
   const id = Number(params?.id);
   const [actionMessage, setActionMessage] = useState("");
   const query = trpc.requests.detail.useQuery({ requestId: id, locale });
-  const answer = trpc.requests.answerChecklist.useMutation({
-    onSuccess: () => {
-      setActionMessage(
-        ar ? "تم حفظ إجابة قائمة التحقق." : "Checklist answer saved."
-      );
-      query.refetch();
-    },
-    onError: error => setActionMessage(describeApiError(error, locale)),
-  });
   const upload = trpc.requests.attachments.upload.useMutation({
     onSuccess: () => {
       setActionMessage(
@@ -147,58 +139,60 @@ export default function RequestDetail() {
               {ar ? "قائمة التحقق والمرفقات" : "Checklist & documents"}
             </h2>
             <div className="mt-5 space-y-4">
-              {data.questions.map(question => (
-                <label key={question.id} className="block text-sm">
-                  <span className="font-medium">
-                    {locale === "en"
-                      ? question.textEn || question.textAr
-                      : question.textAr}
-                  </span>
+              {data.template && (
+                <p className="text-xs text-[#7d8479]">
+                  {ar
+                    ? data.template.nameAr
+                    : data.template.nameEn || data.template.nameAr}{" "}
+                  · v{data.template.version}
+                </p>
+              )}
+              <ChecklistForm
+                requestId={id}
+                questions={data.questions}
+                answers={data.answers}
+                editable={data.permissions.canAnswerChecklist}
+                locale={locale}
+                onSaved={() => {
+                  setActionMessage(
+                    ar
+                      ? "تم حفظ إجابة قائمة التحقق."
+                      : "Checklist answer saved."
+                  );
+                  query.refetch();
+                }}
+                onError={error =>
+                  setActionMessage(describeApiError(error, locale))
+                }
+              />
+              {data.permissions.canUpload && (
+                <label className="block border-t border-[#eee9df] pt-4 text-sm font-medium">
+                  {ar ? "رفع مستند" : "Upload document"}
                   <input
-                    className="field mt-2"
-                    onBlur={event =>
-                      answer.mutate({
-                        requestId: id,
-                        checklistQuestionId: question.id,
-                        answerValue: event.target.value,
-                        finalConfirmation: true,
-                        locale,
-                      })
-                    }
-                    defaultValue={String(
-                      data.answers.find(
-                        item => item.checklistQuestionId === question.id
-                      )?.answerValue ?? ""
-                    )}
+                    className="mt-2 block w-full text-sm"
+                    type="file"
+                    accept="application/pdf,image/*,.doc,.docx"
+                    onChange={event => {
+                      const file = event.target.files?.[0];
+                      if (!file) return;
+                      const reader = new FileReader();
+                      reader.onload = () => {
+                        const raw = String(reader.result);
+                        upload.mutate({
+                          requestId: id,
+                          fileName: file.name,
+                          documentType: "supporting_document",
+                          mimeType: file.type || "application/octet-stream",
+                          dataBase64: raw.split(",")[1] || raw,
+                          requesterVisible: true,
+                          locale,
+                        });
+                      };
+                      reader.readAsDataURL(file);
+                    }}
                   />
                 </label>
-              ))}
-              <label className="block text-sm font-medium">
-                {ar ? "رفع مستند" : "Upload document"}
-                <input
-                  className="mt-2 block w-full text-sm"
-                  type="file"
-                  accept="application/pdf,image/*,.doc,.docx"
-                  onChange={event => {
-                    const file = event.target.files?.[0];
-                    if (!file) return;
-                    const reader = new FileReader();
-                    reader.onload = () => {
-                      const raw = String(reader.result);
-                      upload.mutate({
-                        requestId: id,
-                        fileName: file.name,
-                        documentType: "supporting_document",
-                        mimeType: file.type || "application/octet-stream",
-                        dataBase64: raw.split(",")[1] || raw,
-                        requesterVisible: true,
-                        locale,
-                      });
-                    };
-                    reader.readAsDataURL(file);
-                  }}
-                />
-              </label>
+              )}
               <div className="space-y-2">
                 {data.attachments.map(file => (
                   <div
