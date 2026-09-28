@@ -32,7 +32,7 @@ export function RoleSwitcher({ locale }: { locale: Locale }) {
         <option value="">{ar ? "كل صلاحياتي" : "All my roles"}</option>
         {available.map(role => (
           <option key={role} value={role}>
-            {roleLabels[role][locale]}
+            {roleLabels[role]?.[locale] ?? role}
           </option>
         ))}
       </select>
@@ -54,8 +54,8 @@ export function ActingRoleBanner({ locale }: { locale: Locale }) {
       role="status"
     >
       {ar
-        ? `أنت تعمل الآن بصفة «${roleLabels[role].ar}» فقط.`
-        : `You are acting as ${roleLabels[role].en} only.`}
+        ? `أنت تعمل الآن بصفة «${roleLabels[role]?.ar ?? role}» فقط.`
+        : `You are acting as ${roleLabels[role]?.en ?? role} only.`}
       <button
         className="rounded-lg bg-[#163f43] px-3 py-1 text-white"
         onClick={() => {
