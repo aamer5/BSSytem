@@ -13,16 +13,11 @@ AUTH_DOMAIN="${VITE_FIREBASE_AUTH_DOMAIN:-$FIREBASE_PROJECT_ID.firebaseapp.com}"
 
 # Firestore and Firebase Auth use the Cloud Run service identity (Application
 # Default Credentials); grant it roles/datastore.user on the project. The "^;^"
-# prefix makes ";" the env-var separator so ADMIN_EMAILS may contain commas. Storage
-# secrets are resolved by Cloud Run from Secret Manager; create them first and
-# grant the service identity Secret Manager Secret Accessor.
+# prefix makes ";" the env-var separator so ADMIN_EMAILS may contain commas.
 gcloud run deploy "$SERVICE_NAME" \
   --project "$FIREBASE_PROJECT_ID" \
   --source . \
   --region "$REGION" \
   --allow-unauthenticated \
   --set-build-env-vars "VITE_FIREBASE_API_KEY=$VITE_FIREBASE_API_KEY,VITE_FIREBASE_AUTH_DOMAIN=$AUTH_DOMAIN,VITE_FIREBASE_PROJECT_ID=$FIREBASE_PROJECT_ID,VITE_FIREBASE_APP_ID=$VITE_FIREBASE_APP_ID" \
-  --set-env-vars "^;^NODE_ENV=production;FIREBASE_PROJECT_ID=$FIREBASE_PROJECT_ID;ADMIN_EMAILS=$ADMIN_EMAILS" \
-  --set-secrets \
-    BUILT_IN_FORGE_API_URL=BUILT_IN_FORGE_API_URL:latest,\
-BUILT_IN_FORGE_API_KEY=BUILT_IN_FORGE_API_KEY:latest
+  --set-env-vars "^;^NODE_ENV=production;FIREBASE_PROJECT_ID=$FIREBASE_PROJECT_ID;ADMIN_EMAILS=$ADMIN_EMAILS"

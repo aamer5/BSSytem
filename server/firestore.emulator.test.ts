@@ -154,7 +154,7 @@ describe.skipIf(!emulated)("Firestore + Firebase Auth (emulator)", { timeout: 30
     expect(detail?.template?.id).toBe(boardWide);
     expect(detail?.questions.map(q => q.id)).toEqual([approved, amount, kind]);
     expect(detail?.permissions).toMatchObject({ canAnswerChecklist: true, canUpload: true });
-    expect((await callerFor(other).requests.detail({ requestId: draft.id, locale: "en" }))?.permissions.canAnswerChecklist).toBe(false);
+    await expect(callerFor(other).requests.detail({ requestId: draft.id, locale: "en" })).resolves.toBeNull();
 
     const answer = (checklistQuestionId: number, answerValue: string | number | boolean | null, caller = asRequester) => caller.requests.answerChecklist({ requestId: draft.id, checklistQuestionId, answerValue, finalConfirmation: true, locale: "en" });
     await expect(answer(approved, true, callerFor(other))).rejects.toThrow("errors.forbidden");
@@ -183,7 +183,9 @@ describe.skipIf(!emulated)("Firestore + Firebase Auth (emulator)", { timeout: 30
     const version = async () => (await detailFor(admin)).request.rowVersion;
 
     expect((await detailFor(requester)).permissions.actions).toEqual(["submit", "withdraw"]);
-    expect((await detailFor(other)).permissions.actions).toEqual([]);
+    // Drafts are private to their author.
+    await expect(callerFor(other).requests.detail({ requestId: id, locale: "en" })).resolves.toBeNull();
+    await expect(callerFor(head).requests.detail({ requestId: id, locale: "en" })).resolves.toBeNull();
     await expect(callerFor(other).requests.submit({ requestId: id, expectedRowVersion: 1, locale: "en" })).rejects.toMatchObject({ code: "FORBIDDEN" });
     await callerFor(requester).requests.submit({ requestId: id, expectedRowVersion: 1, locale: "en" });
 
@@ -216,6 +218,75 @@ describe.skipIf(!emulated)("Firestore + Firebase Auth (emulator)", { timeout: 30
     const membership = (await asAdmin.admin.memberships()).find(m => m.userId === other.id)!;
     await asAdmin.admin.deactivateMembership({ membershipId: membership.id });
     await expect(asAdmin.admin.assignMembership({ boardId, userId: other.id, role: "requester" })).resolves.toMatchObject({ id: membership.id, reactivated: true });
+  });
+
+  it("edits drafts, stores files and hides internal material from requesters", async () => {
+    const admin = (await signIn("chief@example.com"))!;
+    const [requester, other, head, secretary, member, boardHead] = await Promise.all(["req@example.com", "other@example.com", "head@example.com", "sec@example.com", "member@example.com", "bh@example.com"].map(email => signIn(email))).then(users => users.map(user => user!));
+    const asAdmin = callerFor(admin);
+    const { id: boardId } = await asAdmin.admin.createBoard({ code: "AUD", nameAr: "التدقيق" });
+    const { id: specialtyId } = await asAdmin.admin.createSpecialty({ boardId, code: "INT", nameAr: "داخلي" });
+    for (const [userId, role] of [[requester.id, "requester"], [other.id, "requester"], [head.id, "secretariat_head"], [secretary.id, "secretary_member"], [member.id, "board_member"], [boardHead.id, "board_head"]] as const) await asAdmin.admin.assignMembership({ boardId, userId, role });
+    const asRequester = callerFor(requester);
+    const detail = (user: typeof requester, requestId: number) => callerFor(user).requests.detail({ requestId, locale: "en" });
+
+    // Draft editing: owner only, draft only, optimistic version.
+    const { id } = await asRequester.requests.createDraft({ boardId, specialtyId, title: "Audit plan", subjectType: "general", priority: "normal", confidentialityLevel: "standard" });
+    expect((await detail(requester, id))?.permissions.canEditDraft).toBe(true);
+    const edit = { requestId: id, title: "Annual audit plan", subjectType: "financial", priority: "high", confidentialityLevel: "restricted", description: " Scope and timeline ", objective: "" } as const;
+    await expect(callerFor(other).requests.updateDraft({ ...edit, expectedRowVersion: 1 })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(asRequester.requests.updateDraft({ ...edit, expectedRowVersion: 5 })).rejects.toMatchObject({ code: "CONFLICT" });
+    await asRequester.requests.updateDraft({ ...edit, expectedRowVersion: 1 });
+    const edited = (await detail(requester, id))!;
+    expect(edited.request).toMatchObject({ title: "Annual audit plan", subjectType: "financial", priority: "high", confidentialityLevel: "restricted", description: "Scope and timeline", objective: null, rowVersion: 2 });
+    expect(edited.history[0].action).toBe("edit_draft");
+
+    // Files round-trip through Firestore chunks (> one chunk) and keep their checksum.
+    const big = Buffer.alloc(1_600_000, 7);
+    big.write("PDF", 0);
+    const { id: ownFile } = await asRequester.requests.attachments.upload({ requestId: id, fileName: "plan.pdf", documentType: "supporting_document", mimeType: "application/pdf", dataBase64: big.toString("base64"), requesterVisible: false, locale: "en" });
+    const downloaded = await asRequester.requests.attachments.download({ attachmentId: ownFile, locale: "en" });
+    expect(Buffer.from(downloaded.dataBase64, "base64").equals(big)).toBe(true);
+    expect((await detail(requester, id))?.attachments[0]).toMatchObject({ requesterVisible: true, byteSize: big.byteLength });
+    await expect(asRequester.requests.attachments.upload({ requestId: id, fileName: "huge.bin", documentType: "supporting_document", mimeType: "application/octet-stream", dataBase64: Buffer.alloc(10 * 1024 * 1024 + 1).toString("base64"), locale: "en" })).rejects.toThrow("errors.fileTooLarge");
+
+    await asRequester.requests.submit({ requestId: id, expectedRowVersion: 2, locale: "en" });
+    await expect(asRequester.requests.updateDraft({ ...edit, expectedRowVersion: 3 })).rejects.toMatchObject({ message: "errors.invalidTransition" });
+
+    // Restricted: secretariat and board head yes, board members and other requesters no.
+    expect((await detail(member, id))).toBeNull();
+    expect((await detail(other, id))).toBeNull();
+    expect((await detail(secretary, id))?.audience).toBe("staff");
+    expect((await callerFor(member).requests.list({ locale: "en", page: 1, pageSize: 20, requestedByMe: false, assignedToMe: false })).total).toBe(0);
+
+    // Staff material the requester must not see.
+    await callerFor(head).requests.transition({ requestId: id, action: "assign", assigneeUserId: secretary.id, expectedRowVersion: 3, locale: "en" });
+    const { id: internalFile } = await callerFor(secretary).requests.attachments.upload({ requestId: id, fileName: "notes.txt", documentType: "working_paper", mimeType: "text/plain", dataBase64: Buffer.from("internal").toString("base64"), requesterVisible: false, locale: "en" });
+    await callerFor(head).requests.transition({ requestId: id, action: "submit_to_board_head", assigneeUserId: boardHead.id, note: "Recommend approval", expectedRowVersion: 4, locale: "en" });
+    await callerFor(boardHead).requests.decide({ requestId: id, outcome: "not_proper", reasonCode: "incomplete", note: "Internal reasoning", requesterVisible: false, expectedRowVersion: 5, locale: "en" });
+
+    const staffView = (await detail(head, id))!;
+    expect(staffView.attachments).toHaveLength(2);
+    expect(staffView.decisions).toHaveLength(1);
+    expect(staffView.snapshots.length).toBeGreaterThan(0);
+    const ownerView = (await detail(requester, id))!;
+    expect(ownerView.audience).toBe("owner");
+    expect(ownerView.attachments.map(a => a.id)).toEqual([ownFile]);
+    expect(ownerView.decisions).toEqual([]);
+    expect(ownerView.snapshots).toEqual([]);
+    expect(ownerView.request).toMatchObject({ lifecycleStatus: "not_proper", decisionNote: null });
+    expect(ownerView.history.find(h => h.action === "submit_to_board_head")?.note).toBeNull();
+    expect(ownerView.history.find(h => h.action === "decide")?.note).toBeNull();
+    expect(JSON.stringify(ownerView)).not.toContain("Internal reasoning");
+    await expect(asRequester.requests.attachments.download({ attachmentId: internalFile, locale: "en" })).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+    // Confidential: only the head, the assigned secretary and the board head.
+    const { id: secret } = await asRequester.requests.createDraft({ boardId, specialtyId, title: "Confidential matter", subjectType: "general", priority: "normal", confidentialityLevel: "confidential" });
+    await asRequester.requests.submit({ requestId: secret, expectedRowVersion: 1, locale: "en" });
+    expect(await detail(secretary, secret)).toBeNull();
+    expect((await detail(head, secret))?.audience).toBe("staff");
+    await callerFor(head).requests.transition({ requestId: secret, action: "assign", assigneeUserId: secretary.id, expectedRowVersion: 2, locale: "en" });
+    expect((await detail(secretary, secret))?.audience).toBe("staff");
   });
 
   it("allocates unique ids under concurrent inserts", async () => {

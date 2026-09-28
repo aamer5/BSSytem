@@ -3,7 +3,6 @@ import express from "express";
 import { createServer } from "http";
 import net from "net";
 import { createExpressMiddleware } from "@trpc/server/adapters/express";
-import { registerStorageProxy } from "./storageProxy";
 import { appRouter } from "../routers";
 import { createContext } from "./context";
 import { corsForAllowedOrigins } from "./cors";
@@ -31,12 +30,10 @@ async function findAvailablePort(startPort: number = 3000): Promise<number> {
 async function startServer() {
   const app = express();
   const server = createServer(app);
-  // Configure body parser with larger size limit for file uploads
-  app.use(express.json({ limit: "50mb" }));
-  app.use(express.urlencoded({ limit: "50mb", extended: true }));
+  // Uploads arrive as base64 JSON: 10 MB files are about 13.4 MB encoded.
+  app.use(express.json({ limit: "15mb" }));
   app.use("/api", corsForAllowedOrigins);
   app.get("/api/health", (_req, res) => res.json({ ok: true }));
-  registerStorageProxy(app);
   // tRPC API
   app.use(
     "/api/trpc",

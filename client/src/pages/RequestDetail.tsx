@@ -1,14 +1,19 @@
 import { ApiErrorState } from "@/components/ApiErrorState";
 import { ChecklistForm } from "@/components/ChecklistForm";
+import { DraftEditor } from "@/components/DraftEditor";
+import { useAuth } from "@/_core/hooks/useAuth";
 import { WorkflowActions } from "@/components/WorkflowActions";
 import { useLocale } from "@/contexts/LocaleContext";
 import { describeApiError } from "@/lib/errors";
 import { trpc } from "@/lib/trpc";
 import {
   actionLabels,
+  confidentialityLabels,
   priorityLabels,
   roleLabels,
   statusLabels,
+  subjectTypeLabels,
+  type Locale,
 } from "@shared/domain";
 import {
   ArrowLeft,
@@ -17,6 +22,7 @@ import {
   Clock3,
   FileText,
   Gavel,
+  Pencil,
   ShieldCheck,
 } from "lucide-react";
 import { Link, useRoute } from "wouter";
@@ -27,6 +33,9 @@ export default function RequestDetail() {
   const [, params] = useRoute("/requests/:id");
   const id = Number(params?.id);
   const [actionMessage, setActionMessage] = useState("");
+  const [editing, setEditing] = useState(false);
+  const [shareWithRequester, setShareWithRequester] = useState(false);
+  const { user } = useAuth();
   const query = trpc.requests.detail.useQuery({ requestId: id, locale });
   const upload = trpc.requests.attachments.upload.useMutation({
     onSuccess: () => {
@@ -59,6 +68,9 @@ export default function RequestDetail() {
       </div>
     );
   const request = data.request;
+  // Staff decide whether their uploads are shared; a requester's own uploads always are.
+  const canChooseVisibility =
+    data.audience === "staff" && request.requesterUserId !== user?.id;
   return (
     <div className="space-y-7">
       <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
@@ -112,27 +124,75 @@ export default function RequestDetail() {
       <div className="grid gap-6 xl:grid-cols-[1.25fr_.75fr]">
         <div className="space-y-6">
           <section className="rounded-3xl border border-[#e2ded2] bg-white p-6">
-            <h2 className="text-lg font-semibold">
-              {ar ? "بيانات الموضوع" : "Subject information"}
-            </h2>
-            <div className="mt-5 grid gap-5 sm:grid-cols-2">
-              {[
-                [
-                  ar ? "التخصص" : "Specialty",
-                  ar
-                    ? data.specialty.nameAr
-                    : data.specialty.nameEn || data.specialty.nameAr,
-                ],
-                [ar ? "مقدم الطلب" : "Requester", data.requester.name || "—"],
-                [ar ? "الوصف" : "Description", request.description || "—"],
-                [ar ? "الهدف" : "Objective", request.objective || "—"],
-              ].map(([label, value]) => (
-                <div key={label}>
-                  <p className="text-xs text-[#7d8479]">{label}</p>
-                  <p className="mt-2 leading-7">{value}</p>
-                </div>
-              ))}
+            <div className="flex items-center justify-between gap-3">
+              <h2 className="text-lg font-semibold">
+                {ar ? "بيانات الموضوع" : "Subject information"}
+              </h2>
+              {data.permissions.canEditDraft && !editing && (
+                <button
+                  onClick={() => setEditing(true)}
+                  className="inline-flex items-center gap-2 rounded-xl border border-[#dcd8c9] px-3 py-1.5 text-sm font-semibold"
+                >
+                  <Pencil className="h-4 w-4" />
+                  {ar ? "تعديل" : "Edit"}
+                </button>
+              )}
             </div>
+            {editing ? (
+              <DraftEditor
+                request={request}
+                locale={locale}
+                onCancel={() => setEditing(false)}
+                onSaved={() => {
+                  setEditing(false);
+                  setActionMessage(
+                    ar ? "تم حفظ تعديلات المسودة." : "Draft changes saved."
+                  );
+                  query.refetch();
+                }}
+              />
+            ) : (
+              <div className="mt-5 grid gap-5 sm:grid-cols-2">
+                {[
+                  [
+                    ar ? "التخصص" : "Specialty",
+                    ar
+                      ? data.specialty.nameAr
+                      : data.specialty.nameEn || data.specialty.nameAr,
+                  ],
+                  [ar ? "مقدم الطلب" : "Requester", data.requester.name || "—"],
+                  [
+                    ar ? "نوع الموضوع" : "Subject type",
+                    subjectTypeLabels[request.subjectType]?.[locale] ??
+                      request.subjectType,
+                  ],
+                  [
+                    ar ? "السرية" : "Confidentiality",
+                    confidentialityLabels[request.confidentialityLevel]?.[
+                      locale
+                    ] ?? request.confidentialityLevel,
+                  ],
+                  [
+                    ar ? "الجهة الطالبة" : "Requesting organization",
+                    request.requesterOrganization || "—",
+                  ],
+                  [ar ? "الوصف" : "Description", request.description || "—"],
+                  [ar ? "الخلفية" : "Background", request.background || "—"],
+                  [ar ? "الهدف" : "Objective", request.objective || "—"],
+                  [
+                    ar ? "النتيجة المطلوبة" : "Requested outcome",
+                    request.requestedOutcome || "—",
+                  ],
+                ].map(([label, value]) => (
+                  <div key={label}>
+                    <p className="text-xs text-[#7d8479]">{label}</p>
+                    <p className="mt-2 whitespace-pre-line leading-7">
+                      {value}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            )}
           </section>
           <section className="rounded-3xl border border-[#e2ded2] bg-white p-6">
             <h2 className="text-lg font-semibold">
@@ -184,13 +244,33 @@ export default function RequestDetail() {
                           documentType: "supporting_document",
                           mimeType: file.type || "application/octet-stream",
                           dataBase64: raw.split(",")[1] || raw,
-                          requesterVisible: true,
+                          requesterVisible: canChooseVisibility
+                            ? shareWithRequester
+                            : true,
                           locale,
                         });
                       };
                       reader.readAsDataURL(file);
+                      event.target.value = "";
                     }}
                   />
+                  <span className="mt-1 block text-xs font-normal text-[#7d8479]">
+                    {ar
+                      ? "PDF أو صورة أو Word، حتى 10 ميجابايت."
+                      : "PDF, image or Word, up to 10 MB."}
+                  </span>
+                  {canChooseVisibility && (
+                    <span className="mt-2 flex items-center gap-2 font-normal">
+                      <input
+                        type="checkbox"
+                        checked={shareWithRequester}
+                        onChange={e => setShareWithRequester(e.target.checked)}
+                      />
+                      {ar
+                        ? "إظهار المستند لمقدم الطلب"
+                        : "Show this document to the requester"}
+                    </span>
+                  )}
                 </label>
               )}
               <div className="space-y-2">
@@ -202,10 +282,19 @@ export default function RequestDetail() {
                     <span className="flex items-center gap-2">
                       <FileText className="h-4 w-4 text-[#a1722d]" />
                       {file.originalFileName}
+                      {data.audience === "staff" && !file.requesterVisible && (
+                        <span className="rounded-full border border-[#d9d4c5] px-2 py-0.5 text-xs text-[#7d8479]">
+                          {ar ? "داخلي" : "Internal"}
+                        </span>
+                      )}
                     </span>
-                    <AttachmentLink attachmentId={file.id} />
+                    <AttachmentLink
+                      attachmentId={file.id}
+                      locale={locale}
+                      onError={message => setActionMessage(message)}
+                    />
                     <span className="text-xs text-[#7d8479]">
-                      {Math.round(file.byteSize / 1024)} KB
+                      {formatSize(file.byteSize)}
                     </span>
                   </div>
                 ))}
@@ -346,23 +435,53 @@ function Stat({
     </div>
   );
 }
-function AttachmentLink({ attachmentId }: { attachmentId: number }) {
-  const { locale } = useLocale();
-  const signed = trpc.requests.attachments.signedUrl.useQuery(
-    { attachmentId, locale },
-    { enabled: false }
-  );
+function AttachmentLink({
+  attachmentId,
+  locale,
+  onError,
+}: {
+  attachmentId: number;
+  locale: Locale;
+  onError: (message: string) => void;
+}) {
+  const utils = trpc.useUtils();
+  const [loading, setLoading] = useState(false);
   return (
     <button
-      className="text-xs font-semibold text-[#a1722d]"
+      className="text-xs font-semibold text-[#a1722d] disabled:opacity-50"
+      disabled={loading}
       onClick={async event => {
         event.preventDefault();
-        const result = await signed.refetch();
-        if (result.data?.url)
-          window.open(result.data.url, "_blank", "noopener,noreferrer");
+        setLoading(true);
+        try {
+          const file = await utils.requests.attachments.download.fetch({
+            attachmentId,
+            locale,
+          });
+          const bytes = Uint8Array.from(atob(file.dataBase64), c =>
+            c.charCodeAt(0)
+          );
+          const url = URL.createObjectURL(
+            new Blob([bytes], { type: file.mimeType })
+          );
+          const link = document.createElement("a");
+          link.href = url;
+          link.download = file.fileName;
+          link.click();
+          setTimeout(() => URL.revokeObjectURL(url), 60_000);
+        } catch (error) {
+          onError(describeApiError(error as { message: string }, locale));
+        } finally {
+          setLoading(false);
+        }
       }}
     >
-      {locale === "ar" ? "فتح" : "Open"}
+      {locale === "ar" ? "تنزيل" : "Download"}
     </button>
   );
+}
+function formatSize(bytes: number) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
