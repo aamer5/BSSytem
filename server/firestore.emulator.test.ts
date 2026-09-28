@@ -174,6 +174,9 @@ describe.skipIf(!emulated)("Firestore + Firebase Auth (emulator)", { timeout: 30
     const submit = () => asRequester.requests.submit({ requestId: draft.id, expectedRowVersion: 1, locale: "en" });
     const upload = (name: string) => asRequester.requests.attachments.upload({ requestId: draft.id, fileName: name, documentType: "checklist_evidence", mimeType: "application/pdf", dataBase64: Buffer.from(`%PDF ${name}`).toString("base64"), requesterVisible: true, locale: "en" });
     await expect(answer(approved, { answerValue: true }, callerFor(other))).rejects.toThrow("errors.forbidden");
+    // Only the request's own requester changes answers; administrators and secretariat staff can't.
+    await expect(answer(approved, { answerValue: true }, asAdmin)).rejects.toThrow("errors.forbidden");
+    await expect(answer(approved, { answerValue: true }, callerFor(hrStaff))).rejects.toThrow("errors.forbidden");
     await expect(answer(approved, { answerValue: "yes" })).rejects.toThrow("errors.invalidAnswer");
 
     // Every question needs a Yes/No answer.
@@ -266,6 +269,7 @@ describe.skipIf(!emulated)("Firestore + Firebase Auth (emulator)", { timeout: 30
     expect((await detail(requester, id))?.permissions.canEditDraft).toBe(true);
     const edit = { requestId: id, title: "Annual audit plan", subjectType: "financial", priority: "high", confidentialityLevel: "restricted", description: " Scope and timeline ", objective: "" } as const;
     await expect(callerFor(other).requests.updateDraft({ ...edit, expectedRowVersion: 1 })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(asAdmin.requests.updateDraft({ ...edit, expectedRowVersion: 1 })).rejects.toMatchObject({ code: "FORBIDDEN" });
     await expect(asRequester.requests.updateDraft({ ...edit, expectedRowVersion: 5 })).rejects.toMatchObject({ code: "CONFLICT" });
     await asRequester.requests.updateDraft({ ...edit, expectedRowVersion: 1 });
     const edited = (await detail(requester, id))!;

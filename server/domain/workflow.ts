@@ -47,8 +47,14 @@ export function availableActions(ctx: ActionContext): WorkflowAction[] {
 }
 
 // Editing actions on a request (checklist answers, uploads). A requester may only edit their own request.
+// Checklist answers and draft contents belong to the requester: nobody else may
+// change them, administrators included.
+const requesterOnlyEdits: readonly RequestAction[] = ["answer_checklist", "edit_draft"];
+
 export function checkRequestEdit(ctx: ActionContext, action: "answer_checklist" | "upload_attachment" | "edit_draft") {
-  const actorRole = authorizeAction(ctx.roles, action, ctx.isAdmin);
+  const requesterOnly = requesterOnlyEdits.includes(action);
+  if (requesterOnly && ctx.requesterUserId !== ctx.userId) throw forbidden();
+  const actorRole = authorizeAction(ctx.roles, action, ctx.isAdmin && !requesterOnly);
   if (actorRole === "requester" && ctx.requesterUserId !== ctx.userId) throw forbidden();
   assertLifecycle(ctx.state, action);
   return actorRole;
