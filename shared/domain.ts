@@ -91,6 +91,7 @@ export const errorLabels: Record<string, Record<Locale, string>> = {
   "errors.fileEmpty": { ar: "الملف فارغ.", en: "The file is empty." },
   "errors.fileTooLarge": { ar: "حجم الملف أكبر من 10 ميجابايت.", en: "The file is larger than 10 MB." },
   "errors.fileUnavailable": { ar: "هذا الملف غير متاح. ربما رُفع قبل نقل النظام؛ اطلب رفعه من جديد.", en: "This file isn't available. It may have been uploaded before the system moved; ask for it to be uploaded again." },
+  "errors.invalidEvidence": { ar: "المرفق غير صالح لهذا الطلب.", en: "That attachment doesn't belong to this request." },
   "errors.questionCodeExists": { ar: "رمز السؤال مستخدم في هذا القالب.", en: "That question code is already used in this template." },
 };
 

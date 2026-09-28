@@ -8,7 +8,7 @@ export function assertLifecycle(state: WorkflowState, action: RequestAction) { c
 export function assertWorkStatus(state: WorkflowState, allowed: readonly WorkStatus[], action: RequestAction) { if (!allowed.includes(state.workStatus)) throw invalidTransition(`${state.lifecycleStatus}/${state.workStatus}`, action); }
 export function assertNonEmpty(value: string | null | undefined, key = "errors.noteRequired") { if (!value?.trim()) throw new DomainError("VALIDATION_FAILED", key); }
 export function assertOwner(ownerId: number, actorId: number) { if (ownerId !== actorId) throw validationFailed([{ key: "errors.ownerRequired" }]); }
-export function answerHasValue(value: ChecklistAnswerValue | undefined) { if (value === null || value === undefined) return false; if (typeof value === "string") return value.trim().length > 0; if (Array.isArray(value)) return value.length > 0; return true; }
+export { answerHasValue } from "@shared/checklist";
 export function conditionMatches(condition: { questionCode: string; operator: "equals" | "not_equals" | "includes"; value: unknown } | null, answers: Map<string, ChecklistAnswerValue>) { if (!condition) return true; const current = answers.get(condition.questionCode); if (condition.operator === "equals") return current === condition.value; if (condition.operator === "not_equals") return current !== condition.value; return Array.isArray(current) && current.includes(String(condition.value)); }
 export const snapshotActions: RequestAction[] = ["submit", "submit_to_board_head", "withdraw", "archive", "decide"];
 export function snapshotRequired(action: RequestAction) { return snapshotActions.includes(action); }

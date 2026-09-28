@@ -139,19 +139,19 @@ describe.skipIf(!emulated)("Firestore + Firebase Auth (emulator)", { timeout: 30
     const { id: otherSpecialty } = await asAdmin.admin.createSpecialty({ boardId, code: "HIR", nameAr: "التوظيف" });
     for (const user of [requester, other]) await asAdmin.admin.assignMembership({ boardId, userId: user.id, role: "requester" });
 
-    // A board-wide template with typed questions.
+    // A board-wide template with Yes/No questions; each may require a note and/or an attachment.
     const { id: boardWide } = await asAdmin.admin.createTemplate({ boardId, nameAr: "عام" });
     await expect(asAdmin.admin.activateTemplate({ templateId: boardWide })).rejects.toThrow("errors.templateHasNoQuestions");
-    await expect(asAdmin.admin.createQuestion({ checklistTemplateId: boardWide, textAr: "النوع", answerType: "single_select", options: ["أ"] })).rejects.toThrow("errors.optionsRequired");
-    const { id: approved } = await asAdmin.admin.createQuestion({ checklistTemplateId: boardWide, textAr: "هل اعتمد المدير؟", answerType: "boolean", required: true });
-    const { id: amount } = await asAdmin.admin.createQuestion({ checklistTemplateId: boardWide, textAr: "المبلغ", answerType: "numeric", required: true });
-    const { id: kind } = await asAdmin.admin.createQuestion({ checklistTemplateId: boardWide, textAr: "النوع", answerType: "single_select", options: ["جديد", "تجديد"] });
+    const { id: approved } = await asAdmin.admin.createQuestion({ checklistTemplateId: boardWide, textAr: "هل اعتمد المدير؟" });
+    const { id: budget } = await asAdmin.admin.createQuestion({ checklistTemplateId: boardWide, textAr: "هل الميزانية متوفرة؟", noteRequired: true });
+    const { id: signed } = await asAdmin.admin.createQuestion({ checklistTemplateId: boardWide, textAr: "هل العقد موقّع؟", noteRequired: true, attachmentRequired: true });
     await asAdmin.admin.activateTemplate({ templateId: boardWide });
-    await expect(asAdmin.admin.createQuestion({ checklistTemplateId: boardWide, textAr: "متأخر", answerType: "text" })).rejects.toThrow("errors.templateNotDraft");
+    await expect(asAdmin.admin.createQuestion({ checklistTemplateId: boardWide, textAr: "متأخر" })).rejects.toThrow("errors.templateNotDraft");
+    expect((await asAdmin.admin.checklists()).find(t => t.id === boardWide)?.questions.map(q => [q.answerType, q.required, q.noteRequired, q.attachmentRequired])).toEqual([["boolean", true, false, false], ["boolean", true, true, false], ["boolean", true, true, true]]);
 
     // A specialty template wins over the board-wide one; a second version retires the first when activated.
     const { id: payV1 } = await asAdmin.admin.createTemplate({ boardId, specialtyId, nameAr: "الرواتب" });
-    await asAdmin.admin.createQuestion({ checklistTemplateId: payV1, textAr: "سؤال", answerType: "text" });
+    await asAdmin.admin.createQuestion({ checklistTemplateId: payV1, textAr: "سؤال" });
     await asAdmin.admin.activateTemplate({ templateId: payV1 });
     const { id: payV2 } = await asAdmin.admin.newTemplateVersion({ templateId: payV1 });
     await asAdmin.admin.activateTemplate({ templateId: payV2 });
@@ -165,21 +165,39 @@ describe.skipIf(!emulated)("Firestore + Firebase Auth (emulator)", { timeout: 30
     const draft = await asRequester.requests.createDraft({ boardId, specialtyId: otherSpecialty, title: "New hire", subjectType: "general", priority: "normal", confidentialityLevel: "standard" });
     const detail = await asRequester.requests.detail({ requestId: draft.id, locale: "en" });
     expect(detail?.template?.id).toBe(boardWide);
-    expect(detail?.questions.map(q => q.id)).toEqual([approved, amount, kind]);
+    expect(detail?.questions.map(q => q.id)).toEqual([approved, budget, signed]);
     expect(detail?.permissions).toMatchObject({ canAnswerChecklist: true, canUpload: true });
     await expect(callerFor(other).requests.detail({ requestId: draft.id, locale: "en" })).resolves.toBeNull();
 
-    const answer = (checklistQuestionId: number, answerValue: string | number | boolean | null, caller = asRequester) => caller.requests.answerChecklist({ requestId: draft.id, checklistQuestionId, answerValue, finalConfirmation: true, locale: "en" });
-    await expect(answer(approved, true, callerFor(other))).rejects.toThrow("errors.forbidden");
-    await expect(answer(amount, "lots")).rejects.toThrow("errors.invalidAnswer");
-    await expect(answer(kind, "other")).rejects.toThrow("errors.invalidAnswer");
-    await answer(approved, true);
-    await expect(asRequester.requests.submit({ requestId: draft.id, expectedRowVersion: 1, locale: "en" })).rejects.toMatchObject({ code: "BAD_REQUEST", message: "errors.checklistIncomplete" });
-    await answer(amount, "2500");
-    const saved = await asRequester.requests.detail({ requestId: draft.id, locale: "en" });
-    expect(saved?.answers.find(a => a.checklistQuestionId === amount)?.answerValue).toBe(2500);
-    await asRequester.requests.submit({ requestId: draft.id, expectedRowVersion: 1, locale: "en" });
-    await expect(answer(kind, "جديد")).rejects.toThrow("errors.invalidTransition");
+    type Parts = { answerValue?: boolean | string | null; comment?: string | null; evidenceAttachmentId?: number | null };
+    const answer = (checklistQuestionId: number, parts: Parts, caller = asRequester) => caller.requests.answerChecklist({ requestId: draft.id, checklistQuestionId, ...parts, finalConfirmation: true, locale: "en" });
+    const submit = () => asRequester.requests.submit({ requestId: draft.id, expectedRowVersion: 1, locale: "en" });
+    const upload = (name: string) => asRequester.requests.attachments.upload({ requestId: draft.id, fileName: name, documentType: "checklist_evidence", mimeType: "application/pdf", dataBase64: Buffer.from(`%PDF ${name}`).toString("base64"), requesterVisible: true, locale: "en" });
+    await expect(answer(approved, { answerValue: true }, callerFor(other))).rejects.toThrow("errors.forbidden");
+    await expect(answer(approved, { answerValue: "yes" })).rejects.toThrow("errors.invalidAnswer");
+
+    // Every question needs a Yes/No answer.
+    await answer(approved, { answerValue: false });
+    await answer(budget, { answerValue: true });
+    await answer(signed, { answerValue: true });
+    // ...and the notes and attachment its settings require.
+    await expect(submit()).rejects.toMatchObject({ code: "BAD_REQUEST", message: "errors.checklistIncomplete" });
+    // Parts are saved separately and kept: a note does not clear the answer.
+    await answer(budget, { comment: "  Covered by the 2027 budget  " });
+    await answer(signed, { comment: "Signed by both parties" });
+    await expect(submit()).rejects.toThrow("errors.checklistIncomplete");
+    // Attachments must belong to this request.
+    const foreign = await callerFor(requester).requests.createDraft({ boardId, specialtyId: otherSpecialty, title: "Another", subjectType: "general", priority: "normal", confidentialityLevel: "standard" });
+    const { id: foreignFile } = await asRequester.requests.attachments.upload({ requestId: foreign.id, fileName: "x.pdf", documentType: "checklist_evidence", mimeType: "application/pdf", dataBase64: Buffer.from("x").toString("base64"), locale: "en" });
+    await expect(answer(signed, { evidenceAttachmentId: foreignFile })).rejects.toThrow("errors.invalidEvidence");
+    const { id: contract } = await upload("contract.pdf");
+    await answer(signed, { evidenceAttachmentId: contract });
+    const saved = (await asRequester.requests.detail({ requestId: draft.id, locale: "en" }))!;
+    expect(saved.answers.find(a => a.checklistQuestionId === budget)).toMatchObject({ answerValue: true, comment: "Covered by the 2027 budget" });
+    expect(saved.answers.find(a => a.checklistQuestionId === signed)).toMatchObject({ answerValue: true, comment: "Signed by both parties", evidenceAttachmentId: contract });
+    expect(saved.answers.find(a => a.checklistQuestionId === approved)).toMatchObject({ answerValue: false, comment: null });
+    await submit();
+    await expect(answer(approved, { answerValue: true })).rejects.toThrow("errors.invalidTransition");
   });
 
   it("walks a request through every workflow step with role and ownership checks", async () => {

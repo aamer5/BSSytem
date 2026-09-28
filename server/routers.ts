@@ -13,7 +13,6 @@ import { MAX_FILE_BYTES, readFile, storeFile } from "./storage";
 import { canReadAttachment, ownerView, requestAudience } from "./domain/visibility";
 import { missingRequiredQuestions, normalizeAnswer } from "./domain/checklist";
 import { activeTemplateFor, listTemplates, loadDraftTemplate, nextTemplateVersion, templateQuestions } from "./checklists";
-import { checklistAnswerTypes } from "@shared/domain";
 
 const localeInput = z.object({ locale: z.enum(["ar", "en"]).default("ar") });
 const membershipRoles = ["requester", "secretary_member", "secretariat_head", "board_member", "board_head"] as const;
@@ -138,8 +137,30 @@ export const appRouter = router({
       const now = Date.now();
       return commitVersionedUpdate(row.id, row.rowVersion, { title: input.title, subjectType: input.subjectType, priority: input.priority, confidentialityLevel: input.confidentialityLevel, description: text(input.description), background: text(input.background), objective: text(input.objective), requestedOutcome: text(input.requestedOutcome), requesterOrganization: text(input.requesterOrganization), updatedAt: now }, { action: "edit_draft", actorUserId: ctx.user.id, actorRoleAtTime: "requester", snapshot: false, now });
     }),
-    submit: protectedProcedure.input(requestIdInput).mutation(async ({ ctx, input }) => { const row = await loadRequest(input.requestId); const actorRole = checkAction(await actionContext(ctx.user, row), "submit"); if (row.rowVersion !== input.expectedRowVersion) throw versionConflict(); const template = row.checklistTemplateId ? null : await activeTemplateFor(row.boardId, row.specialtyId); const templateId = row.checklistTemplateId ?? template?.id ?? null; if (templateId) { const [questions, answers] = await Promise.all([templateQuestions(templateId), queryAll<ChecklistAnswer>(col(COLLECTIONS.checklistAnswers).where("subjectRequestId", "==", row.id))]); const missing = missingRequiredQuestions(questions, answers); if (missing.length) throw new DomainError("VALIDATION_FAILED", "errors.checklistIncomplete", { questions: missing.map(question => question.id) }); } const now = Date.now(); return commitVersionedUpdate(row.id, row.rowVersion, { lifecycleStatus: "submitted", workStatus: "unassigned", submittedAt: now, updatedAt: now, ...(template ? { checklistTemplateId: template.id, checklistTemplateVersion: template.version } : {}) }, { action: "submit", actorUserId: ctx.user.id, actorRoleAtTime: actorRole, snapshot: true, now }); }),
-    answerChecklist: protectedProcedure.input(z.object({ requestId: z.number().int().positive(), checklistQuestionId: z.number().int().positive(), answerValue: z.union([z.string(), z.number(), z.boolean(), z.array(z.string()), z.null()]), comment: z.string().optional(), finalConfirmation: z.boolean().default(false), locale: z.enum(["ar", "en"]).default("ar") })).mutation(async ({ ctx, input }) => { const row = await loadRequest(input.requestId); checkRequestEdit(await actionContext(ctx.user, row), "answer_checklist"); const question = await getById<ChecklistQuestion>(COLLECTIONS.checklistQuestions, input.checklistQuestionId); if (!question || !question.isActive || !row.checklistTemplateId || question.checklistTemplateId !== row.checklistTemplateId) throw new DomainError("VALIDATION_FAILED", "errors.questionNotOnChecklist"); const answerValue = normalizeAnswer(question, input.answerValue); const now = Date.now(); const fields = { answerValue, comment: input.comment ?? null, responderUserId: ctx.user.id, responseDate: now, finalConfirmation: input.finalConfirmation, updatedAt: now }; await getDb().runTransaction(async tx => { const existing = (await tx.get(col(COLLECTIONS.checklistAnswers).where("subjectRequestId", "==", row.id).where("checklistQuestionId", "==", input.checklistQuestionId).limit(1))).docs[0]; if (existing) { tx.update(existing.ref, fields); return; } const [id] = await allocateIds(tx, COLLECTIONS.checklistAnswers); tx.set(docRef(COLLECTIONS.checklistAnswers, id), { id, subjectRequestId: row.id, checklistQuestionId: input.checklistQuestionId, evidenceAttachmentId: null, ...fields } satisfies ChecklistAnswer); }); return { success: true, updatedAt: now }; }),
+    submit: protectedProcedure.input(requestIdInput).mutation(async ({ ctx, input }) => { const row = await loadRequest(input.requestId); const actorRole = checkAction(await actionContext(ctx.user, row), "submit"); if (row.rowVersion !== input.expectedRowVersion) throw versionConflict(); const template = row.checklistTemplateId ? null : await activeTemplateFor(row.boardId, row.specialtyId); const templateId = row.checklistTemplateId ?? template?.id ?? null; if (templateId) { const [questions, answers, attachments] = await Promise.all([templateQuestions(templateId), queryAll<ChecklistAnswer>(col(COLLECTIONS.checklistAnswers).where("subjectRequestId", "==", row.id)), queryAll<RequestAttachment>(col(COLLECTIONS.requestAttachments).where("subjectRequestId", "==", row.id))]); const missing = missingRequiredQuestions(questions, answers, new Set(attachments.filter(a => a.isActive).map(a => a.id))); if (missing.length) throw new DomainError("VALIDATION_FAILED", "errors.checklistIncomplete", { questions: missing.map(question => question.id) }); } const now = Date.now(); return commitVersionedUpdate(row.id, row.rowVersion, { lifecycleStatus: "submitted", workStatus: "unassigned", submittedAt: now, updatedAt: now, ...(template ? { checklistTemplateId: template.id, checklistTemplateVersion: template.version } : {}) }, { action: "submit", actorUserId: ctx.user.id, actorRoleAtTime: actorRole, snapshot: true, now }); }),
+    // Saves any of: the answer, the note, the supporting attachment. Omitted parts keep their stored value.
+    answerChecklist: protectedProcedure.input(z.object({ requestId: z.number().int().positive(), checklistQuestionId: z.number().int().positive(), answerValue: z.union([z.string(), z.number(), z.boolean(), z.array(z.string()), z.null()]).optional(), comment: z.string().max(4000).nullable().optional(), evidenceAttachmentId: z.number().int().positive().nullable().optional(), finalConfirmation: z.boolean().default(false), locale: z.enum(["ar", "en"]).default("ar") })).mutation(async ({ ctx, input }) => {
+      const row = await loadRequest(input.requestId);
+      checkRequestEdit(await actionContext(ctx.user, row), "answer_checklist");
+      const question = await getById<ChecklistQuestion>(COLLECTIONS.checklistQuestions, input.checklistQuestionId);
+      if (!question || !question.isActive || !row.checklistTemplateId || question.checklistTemplateId !== row.checklistTemplateId) throw new DomainError("VALIDATION_FAILED", "errors.questionNotOnChecklist");
+      if (input.evidenceAttachmentId) {
+        const attachment = await getById<RequestAttachment>(COLLECTIONS.requestAttachments, input.evidenceAttachmentId);
+        if (!attachment || !attachment.isActive || attachment.subjectRequestId !== row.id) throw new DomainError("VALIDATION_FAILED", "errors.invalidEvidence");
+      }
+      const now = Date.now();
+      const fields: Partial<ChecklistAnswer> = { responderUserId: ctx.user.id, responseDate: now, finalConfirmation: input.finalConfirmation, updatedAt: now };
+      if (input.answerValue !== undefined) fields.answerValue = normalizeAnswer(question, input.answerValue);
+      if (input.comment !== undefined) fields.comment = input.comment?.trim() || null;
+      if (input.evidenceAttachmentId !== undefined) fields.evidenceAttachmentId = input.evidenceAttachmentId;
+      await getDb().runTransaction(async tx => {
+        const existing = (await tx.get(col(COLLECTIONS.checklistAnswers).where("subjectRequestId", "==", row.id).where("checklistQuestionId", "==", input.checklistQuestionId).limit(1))).docs[0];
+        if (existing) { tx.update(existing.ref, fields); return; }
+        const [id] = await allocateIds(tx, COLLECTIONS.checklistAnswers);
+        tx.set(docRef(COLLECTIONS.checklistAnswers, id), { id, subjectRequestId: row.id, checklistQuestionId: input.checklistQuestionId, answerValue: null, comment: null, evidenceAttachmentId: null, responderUserId: ctx.user.id, responseDate: now, finalConfirmation: input.finalConfirmation, updatedAt: now, ...fields } satisfies ChecklistAnswer);
+      });
+      return { success: true, updatedAt: now };
+    }),
     attachments: router({
       upload: protectedProcedure.input(z.object({ requestId: z.number().int().positive(), fileName: z.string().min(1).max(255), documentType: z.string().min(2).max(80), mimeType: z.string().min(3).max(120), dataBase64: z.string().min(1).max(Math.ceil(MAX_FILE_BYTES / 3) * 4 + 4), requesterVisible: z.boolean().default(false), locale: z.enum(["ar", "en"]).default("ar") })).mutation(async ({ ctx, input }) => {
         const row = await loadRequest(input.requestId);
@@ -271,13 +292,11 @@ export const appRouter = router({
       await docRef(COLLECTIONS.checklistTemplates, template.id).update({ status: "retired", retiredAt: now, updatedAt: now });
       return { success: true };
     }),
-    // Questions can only be added to or removed from draft templates, so answered checklists never change.
-    createQuestion: protectedProcedure.input(z.object({ checklistTemplateId: z.number().positive(), code: z.string().min(1).max(80).optional(), textAr: z.string().min(2), textEn: z.string().optional(), answerType: z.enum(checklistAnswerTypes), required: z.boolean().default(false), options: z.array(z.string().trim().min(1).max(200)).max(50).optional(), sortOrder: z.number().int().optional() })).mutation(async ({ ctx, input }) => {
+    // Questions are Yes/No with a notes box; the admin decides whether a note and an attachment are required.
+    // They can only be added to or removed from draft templates, so answered checklists never change.
+    createQuestion: protectedProcedure.input(z.object({ checklistTemplateId: z.number().positive(), code: z.string().min(1).max(80).optional(), textAr: z.string().trim().min(2), textEn: z.string().optional(), noteRequired: z.boolean().default(false), attachmentRequired: z.boolean().default(false), sortOrder: z.number().int().optional() })).mutation(async ({ ctx, input }) => {
       if (ctx.user.role !== "admin") throw forbidden();
       const template = await loadDraftTemplate(input.checklistTemplateId);
-      const options = Array.from(new Set(input.options ?? []));
-      const isSelect = input.answerType === "single_select" || input.answerType === "multi_select";
-      if (isSelect && options.length < 2) throw new DomainError("VALIDATION_FAILED", "errors.optionsRequired");
       const now = Date.now();
       const id = await getDb().runTransaction(async tx => {
         const existing = (await tx.get(col(COLLECTIONS.checklistQuestions).where("checklistTemplateId", "==", template.id))).docs.map(doc => doc.data() as ChecklistQuestion);
@@ -285,7 +304,7 @@ export const appRouter = router({
         if (existing.some(question => question.code === code)) throw new DomainError("VALIDATION_FAILED", "errors.questionCodeExists");
         const sortOrder = input.sortOrder ?? existing.reduce((max, question) => Math.max(max, question.sortOrder), 0) + 1;
         const [questionId] = await allocateIds(tx, COLLECTIONS.checklistQuestions);
-        tx.set(docRef(COLLECTIONS.checklistQuestions, questionId), { id: questionId, checklistTemplateId: template.id, code, textAr: input.textAr, textEn: input.textEn ?? null, answerType: input.answerType, required: input.required, sortOrder, showIfJson: null, linkedDocumentType: null, optionsJson: isSelect ? options : null, isActive: true, createdAt: now, updatedAt: now } satisfies ChecklistQuestion);
+        tx.set(docRef(COLLECTIONS.checklistQuestions, questionId), { id: questionId, checklistTemplateId: template.id, code, textAr: input.textAr, textEn: input.textEn?.trim() || null, answerType: "boolean", required: true, noteRequired: input.noteRequired, attachmentRequired: input.attachmentRequired, sortOrder, showIfJson: null, linkedDocumentType: null, optionsJson: null, isActive: true, createdAt: now, updatedAt: now } satisfies ChecklistQuestion);
         return questionId;
       });
       return { id, createdAt: now };
