@@ -5,6 +5,7 @@ import { httpBatchLink, TRPCClientError } from "@trpc/client";
 import { createRoot } from "react-dom/client";
 import superjson from "superjson";
 import App from "./App";
+import { getActingRole } from "./lib/actingRole";
 import { getIdToken } from "./lib/firebase";
 import "./index.css";
 
@@ -43,7 +44,11 @@ const trpcClient = trpc.createClient({
       transformer: superjson,
       async headers() {
         const token = await getIdToken();
-        return token ? { Authorization: `Bearer ${token}` } : {};
+        const actingRole = getActingRole();
+        return {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          ...(actingRole ? { "x-acting-role": actingRole } : {}),
+        };
       },
       fetch(input, init) {
         return globalThis.fetch(input, {

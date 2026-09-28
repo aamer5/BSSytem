@@ -3,6 +3,7 @@ import { initTRPC, TRPCError } from "@trpc/server";
 import superjson from "superjson";
 import type { TrpcContext } from "./context";
 import { DomainError } from "../domain/errors";
+import { runWithMembershipScope } from "./actingRole";
 
 const t = initTRPC.context<TrpcContext>().create({
   transformer: superjson,
@@ -33,8 +34,11 @@ const domainErrors = t.middleware(async ({ next }) => {
   return result;
 });
 
+// Membership lookups during the call only see the role the user is acting as.
+const actingScope = t.middleware(({ ctx, next }) => runWithMembershipScope(ctx.acting?.scope ?? null, () => next()));
+
 export const router = t.router;
-export const publicProcedure = t.procedure.use(domainErrors);
+export const publicProcedure = t.procedure.use(domainErrors).use(actingScope);
 
 const requireUser = t.middleware(async opts => {
   const { ctx, next } = opts;

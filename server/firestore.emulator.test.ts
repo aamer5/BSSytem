@@ -174,6 +174,9 @@ describe.skipIf(!emulated)("Firestore + Firebase Auth (emulator)", { timeout: 30
     const submit = () => asRequester.requests.submit({ requestId: draft.id, expectedRowVersion: 1, locale: "en" });
     const upload = (name: string) => asRequester.requests.attachments.upload({ requestId: draft.id, fileName: name, documentType: "checklist_evidence", mimeType: "application/pdf", dataBase64: Buffer.from(`%PDF ${name}`).toString("base64"), requesterVisible: true, locale: "en" });
     await expect(answer(approved, { answerValue: true }, callerFor(other))).rejects.toThrow("errors.forbidden");
+    // Only the request's own requester changes answers; administrators and secretariat staff can't.
+    await expect(answer(approved, { answerValue: true }, asAdmin)).rejects.toThrow("errors.forbidden");
+    await expect(answer(approved, { answerValue: true }, callerFor(hrStaff))).rejects.toThrow("errors.forbidden");
     await expect(answer(approved, { answerValue: "yes" })).rejects.toThrow("errors.invalidAnswer");
 
     // Every question needs a Yes/No answer.
@@ -266,6 +269,7 @@ describe.skipIf(!emulated)("Firestore + Firebase Auth (emulator)", { timeout: 30
     expect((await detail(requester, id))?.permissions.canEditDraft).toBe(true);
     const edit = { requestId: id, title: "Annual audit plan", subjectType: "financial", priority: "high", confidentialityLevel: "restricted", description: " Scope and timeline ", objective: "" } as const;
     await expect(callerFor(other).requests.updateDraft({ ...edit, expectedRowVersion: 1 })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(asAdmin.requests.updateDraft({ ...edit, expectedRowVersion: 1 })).rejects.toMatchObject({ code: "FORBIDDEN" });
     await expect(asRequester.requests.updateDraft({ ...edit, expectedRowVersion: 5 })).rejects.toMatchObject({ code: "CONFLICT" });
     await asRequester.requests.updateDraft({ ...edit, expectedRowVersion: 1 });
     const edited = (await detail(requester, id))!;
@@ -374,6 +378,43 @@ describe.skipIf(!emulated)("Firestore + Firebase Auth (emulator)", { timeout: 30
     await asAdmin.admin.setGeneralSecretariatHead({ userId: general.id, enabled: false });
     const formerGeneral = await signInAgain("gsh@example.com");
     await expect(callerFor(formerGeneral).requests.detail({ requestId: id, locale: "en" })).resolves.toBeNull();
+  });
+
+  it("lets a user act as just one of their roles, never more", async () => {
+    const { createContext } = await import("./_core/context");
+    const adminToken = await idTokenFor("chief@example.com");
+    const admin = (await mod.authenticateRequest(requestWith(adminToken)))!;
+    const [requester, secretary, boardHead] = await Promise.all(["req@example.com", "sec@example.com", "bh@example.com"].map(email => signIn(email))).then(users => users.map(user => user!));
+    const asAdmin = callerFor(admin);
+    // The admin is also this board's secretariat head and a requester on it.
+    const { id: boardId } = await asAdmin.admin.createBoard({ code: "OPS", nameAr: "العمليات", boardHeadUserId: boardHead.id, secretariatHeadUserId: admin.id, secretaryMemberUserIds: [secretary.id] });
+    const { id: specialtyId } = await asAdmin.admin.createSpecialty({ boardId, code: "GEN", nameAr: "عام" });
+    for (const userId of [admin.id, requester.id]) await asAdmin.admin.assignMembership({ boardId, userId, role: "requester" });
+    const { id: othersRequest } = await callerFor(requester).requests.createDraft({ boardId, specialtyId, title: "Someone else's", subjectType: "general", priority: "normal", confidentialityLevel: "standard" });
+    await callerFor(requester).requests.submit({ requestId: othersRequest, expectedRowVersion: 1, locale: "en" });
+
+    const actingAs = async (role?: string) => mod.appRouter.createCaller(await createContext({ req: { headers: { authorization: `Bearer ${adminToken}`, ...(role ? { "x-acting-role": role } : {}) } }, res: {} } as unknown as Parameters<typeof createContext>[0]));
+    const me = await (await actingAs()).auth.me();
+    expect(me).toMatchObject({ role: "admin", actingRole: null });
+    expect(me?.availableRoles.sort()).toEqual(["administrator", "requester", "secretariat_head"].sort());
+
+    // As a requester: no admin pages, only their own requests.
+    const asRequesterRole = await actingAs("requester");
+    expect(await asRequesterRole.auth.me()).toMatchObject({ role: "user", actingRole: "requester" });
+    await expect(asRequesterRole.admin.users()).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(asRequesterRole.requests.detail({ requestId: othersRequest, locale: "en" })).resolves.toBeNull();
+    const { id: mine } = await asRequesterRole.requests.createDraft({ boardId, specialtyId, title: "Mine", subjectType: "general", priority: "normal", confidentialityLevel: "standard" });
+    expect((await asRequesterRole.requests.list({ locale: "en", page: 1, pageSize: 20, requestedByMe: false, assignedToMe: false })).items.map(i => i.id)).toEqual([mine]);
+
+    // As the secretariat head: sees the submitted request and can work it, but can't draft.
+    const asHead = await actingAs("secretariat_head");
+    expect((await asHead.requests.detail({ requestId: othersRequest, locale: "en" }))?.permissions.actions).toEqual(["claim", "assign"]);
+    await expect(asHead.requests.createDraft({ boardId, specialtyId, title: "Nope", subjectType: "general", priority: "normal", confidentialityLevel: "standard" })).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+    // A role the user doesn't hold is ignored rather than granted.
+    expect(await (await actingAs("board_head")).auth.me()).toMatchObject({ role: "admin", actingRole: null });
+    const plain = mod.appRouter.createCaller(await createContext({ req: { headers: { authorization: `Bearer ${await idTokenFor("plain@example.com")}`, "x-acting-role": "administrator" } }, res: {} } as unknown as Parameters<typeof createContext>[0]));
+    expect(await plain.auth.me()).toMatchObject({ role: "user", actingRole: null, availableRoles: [] });
   });
 
   it("allocates unique ids under concurrent inserts", async () => {
