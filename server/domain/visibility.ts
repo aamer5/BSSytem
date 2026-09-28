@@ -8,9 +8,9 @@ export type Audience = "staff" | "owner" | null;
 // Board roles that may read requests of each confidentiality level. A
 // secretary member can always read confidential work assigned to them.
 const readers: Record<ConfidentialityLevel, readonly BoardRole[]> = {
-  standard: ["secretary_member", "secretariat_head", "board_member", "board_head"],
-  restricted: ["secretary_member", "secretariat_head", "board_head"],
-  confidential: ["secretariat_head", "board_head"],
+  standard: ["secretary_member", "secretariat_head", "board_member", "board_head", "general_secretariat_head"],
+  restricted: ["secretary_member", "secretariat_head", "board_head", "general_secretariat_head"],
+  confidential: ["secretariat_head", "board_head", "general_secretariat_head"],
 };
 
 type Viewer = { userId: number; roles: BoardRole[]; isAdmin: boolean };
@@ -28,7 +28,7 @@ export function requestAudience(viewer: Viewer, request: RequestScope): Audience
 }
 
 // Actions whose notes are internal secretariat communication.
-const internalNoteActions = ["claim", "release", "assign", "return_to_secretary_member", "submit_to_board_head", "archive"];
+const internalNoteActions = ["claim", "release", "assign", "return_to_secretary_member", "consult_general_head", "respond_consultation", "submit_to_board_head", "archive"];
 const internalFields = ["internalNotes", "secretaryFindings", "summary", "recommendations", "completenessResult", "jurisdictionResult", "duplicationResult"] as const;
 
 // The requester's view of a request: internal fields, hidden decisions,

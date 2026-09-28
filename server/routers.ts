@@ -20,6 +20,13 @@ const membershipRoles = ["requester", "secretary_member", "secretariat_head", "b
 const requestIdInput = z.object({ requestId: z.number().int().positive(), expectedRowVersion: z.number().int().positive().optional(), locale: z.enum(["ar", "en"]).default("ar") });
 const roleFor = (roles: Array<{ role: string }>) => roles.map(item => item.role as BoardRole);
 type ActorRole = RequestHistory["actorRoleAtTime"];
+type SessionUser = { id: number; role: "user" | "admin"; isGeneralSecretariatHead?: boolean };
+
+// Board roles on one board, plus the platform-wide general secretariat head role.
+async function rolesOn(user: SessionUser, boardId: number) {
+  const roles = roleFor(await getBoardRoles(user.id, boardId));
+  return user.isGeneralSecretariatHead ? [...roles, "general_secretariat_head" as const] : roles;
+}
 
 async function requireBoardRole(user: { id: number; role: "user" | "admin" }, boardId: number, action: RequestAction) {
   const roles = await getBoardRoles(user.id, boardId);
@@ -33,12 +40,12 @@ async function loadRequest(requestId: number) {
   return row;
 }
 
-async function actionContext(user: { id: number; role: "user" | "admin" }, row: SubjectRequest): Promise<ActionContext> {
-  const roles = roleFor(await getBoardRoles(user.id, row.boardId));
+async function actionContext(user: SessionUser, row: SubjectRequest): Promise<ActionContext> {
+  const roles = await rolesOn(user, row.boardId);
   return { state: { lifecycleStatus: row.lifecycleStatus, workStatus: row.workStatus, currentAssigneeId: row.currentAssigneeId ?? null, rowVersion: row.rowVersion }, requesterUserId: row.requesterUserId, userId: user.id, roles, isAdmin: user.role === "admin" };
 }
 
-type Candidate = { id: number; name: string | null; email: string | null; role: BoardMembership["role"] };
+type Candidate = { id: number; name: string | null; email: string | null; role: BoardRole };
 // People on the board who can receive secretariat work or a board-head review.
 async function boardCandidates(boardId: number) {
   const memberships = await queryAll<BoardMembership>(col(COLLECTIONS.boardMemberships).where("boardId", "==", boardId).where("isActive", "==", true));
@@ -51,19 +58,25 @@ async function boardCandidates(boardId: number) {
   };
 }
 
+async function generalHeads(): Promise<Candidate[]> {
+  const rows = await queryAll<User>(col(COLLECTIONS.users).where("isGeneralSecretariatHead", "==", true));
+  return rows.map(user => ({ id: user.id, name: user.name ?? null, email: user.email ?? null, role: "general_secretariat_head" }));
+}
+
 // Requests the user may see: on their boards, and allowed by the request's
 // status and confidentiality level (see domain/visibility.ts).
-async function loadAccessibleRequests(user: { id: number; role: "user" | "admin" }, boardFilter?: number) {
-  const boardIds = await accessibleBoardIds(user.id, user.role);
+async function loadAccessibleRequests(user: SessionUser, boardFilter?: number) {
+  const boardIds = await accessibleBoardIds(user.id, user.role, user.isGeneralSecretariatHead);
   const scoped = boardFilter ? (boardIds === null || boardIds.includes(boardFilter) ? [boardFilter] : []) : boardIds;
   const rows = scoped === null ? await queryAll<SubjectRequest>(col(COLLECTIONS.subjectRequests)) : await queryIn<SubjectRequest>(COLLECTIONS.subjectRequests, "boardId", scoped);
   const memberships = await getActiveMemberships(user.id);
-  const rolesOn = (boardId: number) => memberships.filter(m => m.boardId === boardId).map(m => m.role as BoardRole);
-  return rows.filter(row => requestAudience({ userId: user.id, roles: rolesOn(row.boardId), isAdmin: user.role === "admin" }, row));
+  const general: BoardRole[] = user.isGeneralSecretariatHead ? ["general_secretariat_head"] : [];
+  const boardRolesOf = (boardId: number) => [...memberships.filter(m => m.boardId === boardId).map(m => m.role as BoardRole), ...general];
+  return rows.filter(row => requestAudience({ userId: user.id, roles: boardRolesOf(row.boardId), isAdmin: user.role === "admin" }, row));
 }
 
-async function audienceFor(user: { id: number; role: "user" | "admin" }, row: SubjectRequest) {
-  return requestAudience({ userId: user.id, roles: roleFor(await getBoardRoles(user.id, row.boardId)), isAdmin: user.role === "admin" }, row);
+async function audienceFor(user: SessionUser, row: SubjectRequest) {
+  return requestAudience({ userId: user.id, roles: await rolesOn(user, row.boardId), isAdmin: user.role === "admin" }, row);
 }
 
 type TransitionRecord = { action: string; actorUserId: number; actorRoleAtTime: ActorRole; note?: string | null; snapshot: boolean; decision?: Omit<RequestDecision, "id" | "subjectRequestId">; now: number };
@@ -106,14 +119,14 @@ export const appRouter = router({
     me: publicProcedure.query(opts => opts.ctx.user),
   }),
   reference: router({
-    list: protectedProcedure.input(localeInput).query(({ ctx }) => listReferenceData(ctx.user.id, ctx.user.role)),
+    list: protectedProcedure.input(localeInput).query(({ ctx }) => listReferenceData(ctx.user.id, ctx.user.role, ctx.user.isGeneralSecretariatHead)),
   }),
   dashboard: router({
-    summary: protectedProcedure.input(localeInput).query(async ({ ctx }) => { const rows = await loadAccessibleRequests(ctx.user); const count = (statuses: string[]) => rows.filter(r => statuses.includes(r.lifecycleStatus)).length; const recent = [...rows].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 6).map(r => ({ id: r.id, referenceNumber: r.referenceNumber, title: r.title, status: r.lifecycleStatus, updatedAt: r.updatedAt })); return { total: rows.length, drafts: count(["draft"]), submitted: count(["submitted"]), inReview: count(["under_secretariat_review", "under_board_head_review", "waiting_for_requester"]), completed: count(["proper", "not_proper", "archived"]), pending: count(["submitted", "under_secretariat_review", "under_board_head_review", "waiting_for_requester"]), recent }; }),
+    summary: protectedProcedure.input(localeInput).query(async ({ ctx }) => { const rows = await loadAccessibleRequests(ctx.user); const count = (statuses: string[]) => rows.filter(r => statuses.includes(r.lifecycleStatus)).length; const recent = [...rows].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 6).map(r => ({ id: r.id, referenceNumber: r.referenceNumber, title: r.title, status: r.lifecycleStatus, updatedAt: r.updatedAt })); return { total: rows.length, drafts: count(["draft"]), submitted: count(["submitted"]), inReview: count(["under_secretariat_review", "under_general_secretariat_review", "under_board_head_review", "waiting_for_requester"]), completed: count(["proper", "not_proper", "archived"]), pending: count(["submitted", "under_secretariat_review", "under_general_secretariat_review", "under_board_head_review", "waiting_for_requester"]), recent }; }),
   }),
   requests: router({
     list: protectedProcedure.input(z.object({ locale: z.enum(["ar", "en"]).default("ar"), search: z.string().optional(), status: z.enum(lifecycleStatuses).optional(), boardId: z.number().int().positive().optional(), specialtyId: z.number().int().positive().optional(), requestedByMe: z.boolean().default(false), assignedToMe: z.boolean().default(false), page: z.number().int().min(1).default(1), pageSize: z.number().int().min(1).max(50).default(20) })).query(async ({ ctx, input }) => { const search = input.search?.toLowerCase(); const matches = (await loadAccessibleRequests(ctx.user, input.boardId)).filter(r => (!input.status || r.lifecycleStatus === input.status) && (!input.specialtyId || r.specialtyId === input.specialtyId) && (!input.requestedByMe || r.requesterUserId === ctx.user.id) && (!input.assignedToMe || r.currentAssigneeId === ctx.user.id) && (!search || r.title.toLowerCase().includes(search) || r.referenceNumber.toLowerCase().includes(search))).sort((a, b) => b.updatedAt - a.updatedAt); const [boardMap, specialtyMap] = await Promise.all([getManyById<Board>(COLLECTIONS.boards, matches.map(r => r.boardId)), getManyById<Specialty>(COLLECTIONS.specialties, matches.map(r => r.specialtyId))]); const joined = matches.filter(r => boardMap.has(r.boardId) && specialtyMap.has(r.specialtyId)); const items = joined.slice((input.page - 1) * input.pageSize, input.page * input.pageSize).map(r => { const board = boardMap.get(r.boardId)!; const specialty = specialtyMap.get(r.specialtyId)!; return { id: r.id, referenceNumber: r.referenceNumber, title: r.title, status: r.lifecycleStatus, workStatus: r.workStatus, priority: r.priority, updatedAt: r.updatedAt, boardNameAr: board.nameAr, boardNameEn: board.nameEn, specialtyNameAr: specialty.nameAr, specialtyNameEn: specialty.nameEn }; }); return { items, total: joined.length, page: input.page, pageSize: input.pageSize }; }),
-    detail: protectedProcedure.input(z.object({ requestId: z.number().int().positive(), locale: z.enum(["ar", "en"]).default("ar") })).query(async ({ ctx, input }) => { const request = await getById<SubjectRequest>(COLLECTIONS.subjectRequests, input.requestId); const audience = request ? await audienceFor(ctx.user, request) : null; if (!request || !audience) return null; const [board, specialty, requesterDoc] = await Promise.all([getById<Board>(COLLECTIONS.boards, request.boardId), getById<Specialty>(COLLECTIONS.specialties, request.specialtyId), getById<Parameters<typeof toUser>[0]>(COLLECTIONS.users, request.requesterUserId)]); if (!board || !specialty || !requesterDoc) return null; const byRequest = <T,>(name: Parameters<typeof col>[0]) => queryAll<T>(col(name).where("subjectRequestId", "==", input.requestId)); const [questions, answers, attachments, decisionRows, history, snapshots] = await Promise.all([request.checklistTemplateId ? templateQuestions(request.checklistTemplateId) : Promise.resolve([] as ChecklistQuestion[]), byRequest<ChecklistAnswer>(COLLECTIONS.checklistAnswers), byRequest<RequestAttachment>(COLLECTIONS.requestAttachments).then(rows => rows.filter(row => row.isActive)), byRequest<RequestDecision>(COLLECTIONS.requestDecisions).then(rows => rows.sort((a, b) => b.decidedAt - a.decidedAt)), byRequest<RequestHistory>(COLLECTIONS.requestHistory).then(rows => rows.sort((a, b) => b.createdAt - a.createdAt)), byRequest<RequestSnapshot>(COLLECTIONS.requestSnapshots).then(rows => rows.sort((a, b) => b.revision - a.revision))]); const people = await getManyById<{ name: string | null; email: string | null }>(COLLECTIONS.users, [...decisionRows.map(d => d.decidedByUserId), ...history.map(h => h.actorUserId)]); const deciders = people; const actorNames = Object.fromEntries(Array.from(people, ([userId, person]) => [userId, person.name || person.email || null])); const decisions = decisionRows.map(decision => ({ decision, actorName: deciders.get(decision.decidedByUserId)?.name ?? null })); const actionCtx = await actionContext(ctx.user, request); const actions = availableActions(actionCtx); const candidates = actions.includes("assign") || actions.includes("submit_to_board_head") ? await boardCandidates(request.boardId) : { secretaries: [] as Candidate[], boardHeads: [] as Candidate[] }; const template = request.checklistTemplateId ? ((await getById<ChecklistTemplate>(COLLECTIONS.checklistTemplates, request.checklistTemplateId)) ?? null) : null; const result = { audience, request, board, specialty, requester: toUser(requesterDoc) as User, template, questions, answers, attachments, decisions, history, snapshots, actorNames, permissions: { roles: actionCtx.roles, actions, canAnswerChecklist: canEditRequest(actionCtx, "answer_checklist"), canUpload: canEditRequest(actionCtx, "upload_attachment"), canEditDraft: canEditRequest(actionCtx, "edit_draft") }, candidates }; return audience === "owner" ? ownerView(result, ctx.user.id) : result; }),
+    detail: protectedProcedure.input(z.object({ requestId: z.number().int().positive(), locale: z.enum(["ar", "en"]).default("ar") })).query(async ({ ctx, input }) => { const request = await getById<SubjectRequest>(COLLECTIONS.subjectRequests, input.requestId); const audience = request ? await audienceFor(ctx.user, request) : null; if (!request || !audience) return null; const [board, specialty, requesterDoc] = await Promise.all([getById<Board>(COLLECTIONS.boards, request.boardId), getById<Specialty>(COLLECTIONS.specialties, request.specialtyId), getById<Parameters<typeof toUser>[0]>(COLLECTIONS.users, request.requesterUserId)]); if (!board || !specialty || !requesterDoc) return null; const byRequest = <T,>(name: Parameters<typeof col>[0]) => queryAll<T>(col(name).where("subjectRequestId", "==", input.requestId)); const [questions, answers, attachments, decisionRows, history, snapshots] = await Promise.all([request.checklistTemplateId ? templateQuestions(request.checklistTemplateId) : Promise.resolve([] as ChecklistQuestion[]), byRequest<ChecklistAnswer>(COLLECTIONS.checklistAnswers), byRequest<RequestAttachment>(COLLECTIONS.requestAttachments).then(rows => rows.filter(row => row.isActive)), byRequest<RequestDecision>(COLLECTIONS.requestDecisions).then(rows => rows.sort((a, b) => b.decidedAt - a.decidedAt)), byRequest<RequestHistory>(COLLECTIONS.requestHistory).then(rows => rows.sort((a, b) => b.createdAt - a.createdAt)), byRequest<RequestSnapshot>(COLLECTIONS.requestSnapshots).then(rows => rows.sort((a, b) => b.revision - a.revision))]); const people = await getManyById<{ name: string | null; email: string | null }>(COLLECTIONS.users, [...decisionRows.map(d => d.decidedByUserId), ...history.map(h => h.actorUserId)]); const deciders = people; const actorNames = Object.fromEntries(Array.from(people, ([userId, person]) => [userId, person.name || person.email || null])); const decisions = decisionRows.map(decision => ({ decision, actorName: deciders.get(decision.decidedByUserId)?.name ?? null })); const actionCtx = await actionContext(ctx.user, request); const actions = availableActions(actionCtx); const candidates = actions.includes("assign") || actions.includes("submit_to_board_head") || actions.includes("consult_general_head") ? { ...(await boardCandidates(request.boardId)), generalHeads: actions.includes("consult_general_head") ? await generalHeads() : [] } : { secretaries: [] as Candidate[], boardHeads: [] as Candidate[], generalHeads: [] as Candidate[] }; const template = request.checklistTemplateId ? ((await getById<ChecklistTemplate>(COLLECTIONS.checklistTemplates, request.checklistTemplateId)) ?? null) : null; const result = { audience, request, board, specialty, requester: toUser(requesterDoc) as User, template, questions, answers, attachments, decisions, history, snapshots, actorNames, permissions: { roles: actionCtx.roles, actions, canAnswerChecklist: canEditRequest(actionCtx, "answer_checklist"), canUpload: canEditRequest(actionCtx, "upload_attachment"), canEditDraft: canEditRequest(actionCtx, "edit_draft") }, candidates }; return audience === "owner" ? ownerView(result, ctx.user.id) : result; }),
     createDraft: protectedProcedure.input(z.object({ boardId: z.number().int().positive(), specialtyId: z.number().int().positive(), title: z.string().min(3).max(500), subjectType: z.enum(subjectTypes), priority: z.enum(priorities), confidentialityLevel: z.enum(confidentialityLevels), description: z.string().nullable().optional(), background: z.string().nullable().optional(), objective: z.string().nullable().optional(), requestedOutcome: z.string().nullable().optional(), requesterOrganization: z.string().nullable().optional() })).mutation(async ({ ctx, input }) => { await requireBoardRole(ctx.user, input.boardId, "create_draft"); const specialty = await getById<Specialty>(COLLECTIONS.specialties, input.specialtyId); if (!specialty || specialty.boardId !== input.boardId) throw new DomainError("VALIDATION_FAILED", "errors.validationFailed"); const template = await activeTemplateFor(input.boardId, input.specialtyId); const now = Date.now(); const ref = `SR-${new Date(now).getUTCFullYear()}-${crypto.randomUUID().slice(0, 8).toUpperCase()}`; const id = await getDb().runTransaction(async tx => { const [requestId, historyId] = await allocateIds(tx, COLLECTIONS.subjectRequests, COLLECTIONS.requestHistory); const request: SubjectRequest = { id: requestId, referenceNumber: ref, revision: 1, rowVersion: 1, title: input.title, subjectType: input.subjectType, priority: input.priority, confidentialityLevel: input.confidentialityLevel, source: "portal", requesterUserId: ctx.user.id, requesterOrganization: input.requesterOrganization ?? null, requesterContactDetails: null, preferredCommunicationChannel: null, boardId: input.boardId, specialtyId: input.specialtyId, assignedSecretaryMemberId: null, currentAssigneeId: null, dueDate: null, description: input.description ?? null, background: input.background ?? null, objective: input.objective ?? null, requestedOutcome: input.requestedOutcome ?? null, justification: null, urgencyExplanation: null, secretaryFindings: null, summary: null, recommendations: null, internalNotes: null, completenessResult: null, jurisdictionResult: null, duplicationResult: null, boardHeadOutcome: null, decisionReasonCode: null, decisionNote: null, decisionNoteRequesterVisible: null, decisionAt: null, decisionByUserId: null, lifecycleStatus: "draft", workStatus: "unassigned", agendaHandoffStatus: null, checklistTemplateId: template?.id ?? null, checklistTemplateVersion: template?.version ?? null, correlationId: null, agendaItemId: null, createdAt: now, updatedAt: now, submittedAt: null, closedAt: null }; tx.set(docRef(COLLECTIONS.subjectRequests, requestId), request); writeHistory(tx, historyId, { subjectRequestId: requestId, actorUserId: ctx.user.id, actorRoleAtTime: "requester", action: "create_draft", beforeState: {}, afterState: { lifecycleStatus: "draft", workStatus: "unassigned", rowVersion: 1 }, note: null, correlationId: null, createdAt: now }); return requestId; }); return { id, referenceNumber: ref, rowVersion: 1 }; }),
     claim: protectedProcedure.input(requestIdInput).mutation(async ({ ctx, input }) => { const row = await loadRequest(input.requestId); const actorRole = checkAction(await actionContext(ctx.user, row), "claim"); if (row.rowVersion !== input.expectedRowVersion) throw versionConflict(); const now = Date.now(); return commitVersionedUpdate(row.id, row.rowVersion, { currentAssigneeId: ctx.user.id, assignedSecretaryMemberId: ctx.user.id, lifecycleStatus: "under_secretariat_review", workStatus: "assigned", updatedAt: now }, { action: "claim", actorUserId: ctx.user.id, actorRoleAtTime: actorRole, snapshot: false, now }); }),
     // The requester can change the subject details while the request is still a draft.
@@ -146,14 +159,14 @@ export const appRouter = router({
         return { fileName: attachment.originalFileName, mimeType: attachment.mimeType, dataBase64: data.toString("base64") };
       }),
     }),
-    transition: protectedProcedure.input(z.object({ requestId: z.number().int().positive(), action: z.enum(["release", "assign", "request_info", "respond_info", "return_to_requester", "return_to_secretary_member", "submit_to_board_head", "withdraw", "archive"]), expectedRowVersion: z.number().int().positive(), note: z.string().max(4000).optional(), assigneeUserId: z.number().int().positive().optional(), locale: z.enum(["ar", "en"]).default("ar") })).mutation(async ({ ctx, input }) => {
+    transition: protectedProcedure.input(z.object({ requestId: z.number().int().positive(), action: z.enum(["release", "assign", "request_info", "respond_info", "return_to_requester", "return_to_secretary_member", "consult_general_head", "respond_consultation", "submit_to_board_head", "withdraw", "archive"]), expectedRowVersion: z.number().int().positive(), note: z.string().max(4000).optional(), assigneeUserId: z.number().int().positive().optional(), locale: z.enum(["ar", "en"]).default("ar") })).mutation(async ({ ctx, input }) => {
       const row = await loadRequest(input.requestId);
       const actorRole = checkAction(await actionContext(ctx.user, row), input.action);
       if (noteRequiredActions.includes(input.action)) assertNonEmpty(input.note);
       let assignee: number | null = null;
-      if (input.action === "assign" || input.action === "submit_to_board_head") {
+      if (input.action === "assign" || input.action === "submit_to_board_head" || input.action === "consult_general_head") {
         const candidates = await boardCandidates(row.boardId);
-        const pool = input.action === "assign" ? candidates.secretaries : candidates.boardHeads;
+        const pool = input.action === "assign" ? candidates.secretaries : input.action === "submit_to_board_head" ? candidates.boardHeads : await generalHeads();
         if (!input.assigneeUserId || !pool.some(person => person.id === input.assigneeUserId)) throw new DomainError("VALIDATION_FAILED", "errors.invalidAssignee");
         assignee = input.assigneeUserId;
       }
@@ -168,6 +181,9 @@ export const appRouter = router({
         // The requester's answer goes back to the secretary who asked for it.
         respond_info: { lifecycleStatus: "under_secretariat_review", workStatus: secretary ? "assigned" : "unassigned", currentAssigneeId: secretary },
         return_to_secretary_member: { lifecycleStatus: "under_secretariat_review", workStatus: secretary ? "assigned" : "unassigned", currentAssigneeId: secretary },
+        // The general secretariat head's advice goes back to the secretariat head who asked for it.
+        consult_general_head: { lifecycleStatus: "under_general_secretariat_review", workStatus: "in_review", currentAssigneeId: assignee, consultedByUserId: ctx.user.id },
+        respond_consultation: { lifecycleStatus: "under_secretariat_review", workStatus: row.consultedByUserId || secretary ? "assigned" : "unassigned", currentAssigneeId: row.consultedByUserId ?? secretary, consultedByUserId: null },
         submit_to_board_head: { lifecycleStatus: "under_board_head_review", workStatus: "in_review", currentAssigneeId: assignee },
         withdraw: { lifecycleStatus: "withdrawn", workStatus: "completed", currentAssigneeId: null, closedAt: now },
         archive: { lifecycleStatus: "archived", workStatus: "completed", closedAt: row.closedAt ?? now },
@@ -178,20 +194,21 @@ export const appRouter = router({
   }),
   admin: router({
     reference: protectedProcedure.query(async ({ ctx }) => { if (ctx.user.role !== "admin") throw forbidden(); return listReferenceData(ctx.user.id, "admin"); }),
-    users: protectedProcedure.query(async ({ ctx }) => { if (ctx.user.role !== "admin") throw forbidden(); const rows = await queryAll<User>(col(COLLECTIONS.users)); return rows.map(u => ({ id: u.id, name: u.name ?? null, email: u.email ?? null, role: u.role })).sort((a, b) => (a.name ?? "").localeCompare(b.name ?? "")); }),
-    // A board always starts with a secretariat head and at least one secretariat team member.
-    createBoard: protectedProcedure.input(z.object({ code: z.string().trim().min(2).max(32), nameAr: z.string().trim().min(2), nameEn: z.string().optional(), descriptionAr: z.string().optional(), descriptionEn: z.string().optional(), secretariatHeadUserId: z.number().int().positive(), secretaryMemberUserIds: z.array(z.number().int().positive()).min(1).max(50) })).mutation(async ({ ctx, input }) => {
+    users: protectedProcedure.query(async ({ ctx }) => { if (ctx.user.role !== "admin") throw forbidden(); const rows = await queryAll<User>(col(COLLECTIONS.users)); return rows.map(u => ({ id: u.id, name: u.name ?? null, email: u.email ?? null, role: u.role, isGeneralSecretariatHead: Boolean(u.isGeneralSecretariatHead) })).sort((a, b) => (a.name ?? "").localeCompare(b.name ?? "")); }),
+    // A board always starts with its board head, a secretariat head and at least one secretariat team member.
+    createBoard: protectedProcedure.input(z.object({ code: z.string().trim().min(2).max(32), nameAr: z.string().trim().min(2), nameEn: z.string().optional(), descriptionAr: z.string().optional(), descriptionEn: z.string().optional(), boardHeadUserId: z.number().int().positive(), secretariatHeadUserId: z.number().int().positive(), secretaryMemberUserIds: z.array(z.number().int().positive()).min(1).max(50) })).mutation(async ({ ctx, input }) => {
       if (ctx.user.role !== "admin") throw forbidden();
       const members = Array.from(new Set(input.secretaryMemberUserIds));
       if (members.includes(input.secretariatHeadUserId)) throw new DomainError("VALIDATION_FAILED", "errors.headInTeam");
-      const people = await getManyById<User>(COLLECTIONS.users, [input.secretariatHeadUserId, ...members]);
-      if (people.size !== members.length + 1) throw notFound();
+      if (input.boardHeadUserId === input.secretariatHeadUserId || members.includes(input.boardHeadUserId)) throw new DomainError("VALIDATION_FAILED", "errors.boardHeadInSecretariat");
+      const people = await getManyById<User>(COLLECTIONS.users, [input.boardHeadUserId, input.secretariatHeadUserId, ...members]);
+      if (people.size !== members.length + 2) throw notFound();
       const now = Date.now();
       const id = await getDb().runTransaction(async tx => {
         await assertUnique(tx, COLLECTIONS.boards, { code: input.code }, "errors.boardCodeExists");
-        const [boardId, ...membershipIds] = await allocateIds(tx, COLLECTIONS.boards, COLLECTIONS.boardMemberships, ...members.map(() => COLLECTIONS.boardMemberships));
+        const [boardId, ...membershipIds] = await allocateIds(tx, COLLECTIONS.boards, COLLECTIONS.boardMemberships, COLLECTIONS.boardMemberships, ...members.map(() => COLLECTIONS.boardMemberships));
         tx.set(docRef(COLLECTIONS.boards, boardId), { id: boardId, code: input.code, nameAr: input.nameAr, nameEn: input.nameEn?.trim() || null, mandateAr: null, mandateEn: null, isActive: true, allowWithdrawDuringBoardHeadReview: false, createdByUserId: ctx.user.id, createdAt: now, updatedAt: now, descriptionAr: input.descriptionAr ?? null, descriptionEn: input.descriptionEn ?? null } satisfies Board);
-        const assignments: Array<[number, BoardMembership["role"]]> = [[input.secretariatHeadUserId, "secretariat_head"], ...members.map(userId => [userId, "secretary_member"] as [number, BoardMembership["role"]])];
+        const assignments: Array<[number, BoardMembership["role"]]> = [[input.boardHeadUserId, "board_head"], [input.secretariatHeadUserId, "secretariat_head"], ...members.map(userId => [userId, "secretary_member"] as [number, BoardMembership["role"]])];
         assignments.forEach(([userId, role], index) => tx.set(docRef(COLLECTIONS.boardMemberships, membershipIds[index]), { id: membershipIds[index], boardId, userId, role, isActive: true, assignedByUserId: ctx.user.id, createdAt: now, updatedAt: now } satisfies BoardMembership));
         return boardId;
       });
@@ -281,19 +298,28 @@ export const appRouter = router({
       await docRef(COLLECTIONS.checklistQuestions, question.id).update({ isActive: false, updatedAt: Date.now() });
       return { success: true };
     }),
-    // The last active secretariat head or secretariat team member of a board can't be removed.
+    // The last active board head, secretariat head or secretariat team member of a board can't be removed.
     deactivateMembership: protectedProcedure.input(z.object({ membershipId: z.number().positive() })).mutation(async ({ ctx, input }) => {
       if (ctx.user.role !== "admin") throw forbidden();
       await getDb().runTransaction(async tx => {
         const ref = docRef(COLLECTIONS.boardMemberships, input.membershipId);
         const membership = (await tx.get(ref)).data() as BoardMembership | undefined;
         if (!membership) throw notFound();
-        if (membership.isActive && (membership.role === "secretariat_head" || membership.role === "secretary_member")) {
+        const protectedRoles: Partial<Record<BoardMembership["role"], string>> = { board_head: "errors.lastBoardHead", secretariat_head: "errors.lastSecretariatHead", secretary_member: "errors.lastSecretaryMember" };
+        const lastError = protectedRoles[membership.role];
+        if (membership.isActive && lastError) {
           const peers = await tx.get(col(COLLECTIONS.boardMemberships).where("boardId", "==", membership.boardId).where("role", "==", membership.role).where("isActive", "==", true));
-          if (peers.size <= 1) throw new DomainError("VALIDATION_FAILED", membership.role === "secretariat_head" ? "errors.lastSecretariatHead" : "errors.lastSecretaryMember");
+          if (peers.size <= 1) throw new DomainError("VALIDATION_FAILED", lastError);
         }
         tx.update(ref, { isActive: false, updatedAt: Date.now() });
       });
+      return { success: true };
+    }),
+    // General secretariat heads oversee every board and can be consulted before the board head.
+    setGeneralSecretariatHead: protectedProcedure.input(z.object({ userId: z.number().positive(), enabled: z.boolean() })).mutation(async ({ ctx, input }) => {
+      if (ctx.user.role !== "admin") throw forbidden();
+      if (!(await getById(COLLECTIONS.users, input.userId))) throw notFound();
+      await docRef(COLLECTIONS.users, input.userId).update({ isGeneralSecretariatHead: input.enabled });
       return { success: true };
     }),
     setUserRole: protectedProcedure.input(z.object({ userId: z.number().positive(), role: z.enum(["user", "admin"]) })).mutation(async ({ ctx, input }) => { if (ctx.user.role !== "admin") throw forbidden(); await docRef(COLLECTIONS.users, input.userId).update({ role: input.role }); return { success: true }; }),

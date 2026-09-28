@@ -19,6 +19,8 @@ type Action =
   | "respond_info"
   | "return_to_requester"
   | "return_to_secretary_member"
+  | "consult_general_head"
+  | "respond_consultation"
   | "submit_to_board_head"
   | "decide"
   | "withdraw"
@@ -37,6 +39,8 @@ const noteRequired: Action[] = [
   "respond_info",
   "return_to_requester",
   "return_to_secretary_member",
+  "consult_general_head",
+  "respond_consultation",
   "decide",
 ];
 // Irreversible or closing actions are styled as secondary to avoid mis-clicks.
@@ -59,6 +63,14 @@ const notePrompt: Partial<Record<Action, Record<Locale, string>>> = {
     ar: "ما المطلوب من عضو الأمانة؟",
     en: "What should the secretary do?",
   },
+  consult_general_head: {
+    ar: "ما الذي تحتاج إلى استشارة رئيس الأمانة العامة فيه؟",
+    en: "What do you need the general secretariat head's advice on?",
+  },
+  respond_consultation: {
+    ar: "رأيك وتوجيهك لرئيس الأمانة",
+    en: "Your advice for the secretariat head",
+  },
   decide: { ar: "مسوغات القرار", en: "Reasoning for the decision" },
   withdraw: {
     ar: "سبب السحب (اختياري)",
@@ -77,7 +89,11 @@ export function WorkflowActions({
   requestId: number;
   rowVersion: number;
   actions: Action[];
-  candidates: { secretaries: Candidate[]; boardHeads: Candidate[] };
+  candidates: {
+    secretaries: Candidate[];
+    boardHeads: Candidate[];
+    generalHeads: Candidate[];
+  };
   locale: Locale;
   onDone: (message: string) => void;
 }) {
@@ -133,8 +149,13 @@ export function WorkflowActions({
       ? candidates.secretaries
       : active === "submit_to_board_head"
         ? candidates.boardHeads
-        : [];
-  const needsPerson = active === "assign" || active === "submit_to_board_head";
+        : active === "consult_general_head"
+          ? candidates.generalHeads
+          : [];
+  const needsPerson =
+    active === "assign" ||
+    active === "submit_to_board_head" ||
+    active === "consult_general_head";
 
   const confirm = () => {
     if (!active) return;
@@ -197,9 +218,13 @@ export function WorkflowActions({
                 ? ar
                   ? "عضو الأمانة"
                   : "Secretary"
-                : ar
-                  ? "رئيس المجلس"
-                  : "Board head"}
+                : active === "consult_general_head"
+                  ? ar
+                    ? "رئيس الأمانة العامة"
+                    : "General secretariat head"
+                  : ar
+                    ? "رئيس المجلس"
+                    : "Board head"}
               <select
                 className={inputClass}
                 value={assignee}
@@ -220,9 +245,13 @@ export function WorkflowActions({
               </select>
               {!people.length && (
                 <span className="mt-1.5 block text-[#f4e5bd]">
-                  {ar
-                    ? "لا يوجد أعضاء مؤهلون في هذا المجلس. أضفهم من صفحة الإدارة."
-                    : "No eligible members on this board yet. Add them from Administration."}
+                  {active === "consult_general_head"
+                    ? ar
+                      ? "لم يُعيَّن رئيس للأمانة العامة بعد. يعيّنه مدير النظام من صفحة الإدارة."
+                      : "No general secretariat head has been assigned yet. An administrator can assign one in Administration."
+                    : ar
+                      ? "لا يوجد أعضاء مؤهلون في هذا المجلس. أضفهم من صفحة الإدارة."
+                      : "No eligible members on this board yet. Add them from Administration."}
                 </span>
               )}
             </label>
