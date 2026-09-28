@@ -417,6 +417,28 @@ describe.skipIf(!emulated)("Firestore + Firebase Auth (emulator)", { timeout: 30
     expect(await plain.auth.me()).toMatchObject({ role: "user", actingRole: null, availableRoles: [] });
   });
 
+  it("only lets requesters create requests, on the boards where they are requesters", async () => {
+    const admin = (await signIn("chief@example.com"))!;
+    const [requester, head, secretary, boardHead] = await Promise.all(["req@example.com", "head@example.com", "sec@example.com", "bh@example.com"].map(email => signIn(email))).then(users => users.map(user => user!));
+    const asAdmin = callerFor(admin);
+    const { id: boardId } = await asAdmin.admin.createBoard({ code: "PRC", nameAr: "المشتريات", boardHeadUserId: boardHead.id, secretariatHeadUserId: head.id, secretaryMemberUserIds: [secretary.id] });
+    const { id: otherBoard } = await asAdmin.admin.createBoard({ code: "ICT", nameAr: "التقنية", boardHeadUserId: boardHead.id, secretariatHeadUserId: head.id, secretaryMemberUserIds: [secretary.id] });
+    const { id: specialtyId } = await asAdmin.admin.createSpecialty({ boardId, code: "GEN", nameAr: "عام" });
+    const { id: otherSpecialty } = await asAdmin.admin.createSpecialty({ boardId: otherBoard, code: "GEN", nameAr: "عام" });
+    await asAdmin.admin.assignMembership({ boardId, userId: requester.id, role: "requester" });
+    const draft = { specialtyId, title: "Tender rules", subjectType: "general", priority: "normal", confidentialityLevel: "standard" } as const;
+
+    for (const user of [admin, head, secretary, boardHead]) {
+      await expect(callerFor(user).requests.createDraft({ boardId, ...draft })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    }
+    await expect(callerFor(requester).requests.createDraft({ ...draft, boardId: otherBoard, specialtyId: otherSpecialty })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(callerFor(requester).requests.createDraft({ boardId, ...draft })).resolves.toMatchObject({ rowVersion: 1 });
+
+    expect((await callerFor(requester).reference.list({ locale: "en" })).requesterBoardIds).toEqual([boardId]);
+    expect((await asAdmin.reference.list({ locale: "en" })).requesterBoardIds).toEqual([]);
+    expect((await callerFor(head).reference.list({ locale: "en" })).requesterBoardIds).toEqual([]);
+  });
+
   it("allocates unique ids under concurrent inserts", async () => {
     const ids = await Promise.all(Array.from({ length: 12 }, () => mod.firestore.insertWithId(mod.firestore.COLLECTIONS.requestAttachments, {})));
     expect(new Set(ids).size).toBe(12);
