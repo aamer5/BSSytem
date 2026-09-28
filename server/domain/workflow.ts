@@ -3,7 +3,7 @@ import { authorizeAction } from "./permissions";
 import { DomainError, forbidden, invalidTransition, validationFailed, versionConflict } from "./errors";
 export type WorkflowState = { lifecycleStatus: LifecycleStatus; workStatus: WorkStatus; currentAssigneeId: number | null; rowVersion: number };
 export type HistoryDraft = { actorUserId: number; actorRoleAtTime: BoardRole; action: RequestAction; beforeState: Record<string, unknown>; afterState: Record<string, unknown>; note?: string; correlationId?: string | null; createdAt: number };
-const lifecycleRules: Partial<Record<RequestAction, readonly LifecycleStatus[]>> = { edit_draft: ["draft"], answer_checklist: ["draft", "under_secretariat_review", "waiting_for_requester"], upload_attachment: ["draft", "under_secretariat_review", "waiting_for_requester"], submit: ["draft"], claim: ["submitted"], release: ["under_secretariat_review"], assign: ["submitted", "under_secretariat_review"], edit_working_copy: ["under_secretariat_review"], request_info: ["under_secretariat_review"], respond_info: ["waiting_for_requester"], return_to_requester: ["under_secretariat_review"], return_to_secretary_member: ["under_secretariat_review"], submit_to_board_head: ["under_secretariat_review"], decide: ["under_board_head_review"], withdraw: ["draft", "submitted", "under_secretariat_review", "waiting_for_requester", "under_board_head_review"], archive: ["proper", "not_proper", "withdrawn", "cancelled"] };
+const lifecycleRules: Partial<Record<RequestAction, readonly LifecycleStatus[]>> = { edit_draft: ["draft"], answer_checklist: ["draft", "under_secretariat_review", "waiting_for_requester"], upload_attachment: ["draft", "under_secretariat_review", "waiting_for_requester"], submit: ["draft"], claim: ["submitted"], release: ["under_secretariat_review"], assign: ["submitted", "under_secretariat_review"], edit_working_copy: ["under_secretariat_review"], request_info: ["under_secretariat_review"], respond_info: ["waiting_for_requester"], return_to_requester: ["under_secretariat_review"], return_to_secretary_member: ["under_secretariat_review"], consult_general_head: ["under_secretariat_review"], respond_consultation: ["under_general_secretariat_review"], submit_to_board_head: ["under_secretariat_review"], decide: ["under_board_head_review"], withdraw: ["draft", "submitted", "under_secretariat_review", "under_general_secretariat_review", "waiting_for_requester", "under_board_head_review"], archive: ["proper", "not_proper", "withdrawn", "cancelled"] };
 export function assertLifecycle(state: WorkflowState, action: RequestAction) { const allowed = lifecycleRules[action]; if (allowed && !allowed.includes(state.lifecycleStatus)) throw invalidTransition(state.lifecycleStatus, action); }
 export function assertWorkStatus(state: WorkflowState, allowed: readonly WorkStatus[], action: RequestAction) { if (!allowed.includes(state.workStatus)) throw invalidTransition(`${state.lifecycleStatus}/${state.workStatus}`, action); }
 export function assertNonEmpty(value: string | null | undefined, key = "errors.noteRequired") { if (!value?.trim()) throw new DomainError("VALIDATION_FAILED", key); }
@@ -17,15 +17,15 @@ export function assertOptimisticUpdateResult(result: unknown) { const header = A
 export function buildHistory(before: WorkflowState, after: WorkflowState, actorUserId: number, actorRoleAtTime: BoardRole, action: RequestAction, now: number, note?: string, correlationId?: string | null): HistoryDraft { return { actorUserId, actorRoleAtTime, action, beforeState: { ...before }, afterState: { ...after }, note, correlationId, createdAt: now }; }
 
 // Request-level workflow actions a user can trigger from the request page.
-export const workflowActions = ["submit", "claim", "release", "assign", "request_info", "respond_info", "return_to_requester", "return_to_secretary_member", "submit_to_board_head", "decide", "withdraw", "archive"] as const;
+export const workflowActions = ["submit", "claim", "release", "assign", "request_info", "respond_info", "return_to_requester", "return_to_secretary_member", "consult_general_head", "respond_consultation", "submit_to_board_head", "decide", "withdraw", "archive"] as const;
 export type WorkflowAction = (typeof workflowActions)[number];
-const workRules: Record<WorkflowAction, readonly WorkStatus[]> = { submit: ["unassigned"], claim: ["unassigned"], release: ["assigned", "in_review"], assign: ["unassigned", "assigned", "in_review"], request_info: ["assigned", "in_review"], respond_info: ["waiting_for_requester"], return_to_requester: ["assigned", "in_review"], return_to_secretary_member: ["assigned", "in_review"], submit_to_board_head: ["assigned", "in_review"], decide: ["in_review"], withdraw: ["unassigned", "assigned", "in_review", "waiting_for_requester"], archive: ["completed"] };
+const workRules: Record<WorkflowAction, readonly WorkStatus[]> = { submit: ["unassigned"], claim: ["unassigned"], release: ["assigned", "in_review"], assign: ["unassigned", "assigned", "in_review"], request_info: ["assigned", "in_review"], respond_info: ["waiting_for_requester"], return_to_requester: ["assigned", "in_review"], return_to_secretary_member: ["assigned", "in_review"], consult_general_head: ["assigned", "in_review"], respond_consultation: ["in_review"], submit_to_board_head: ["assigned", "in_review"], decide: ["in_review"], withdraw: ["unassigned", "assigned", "in_review", "waiting_for_requester"], archive: ["completed"] };
 // Only the request's own requester may perform these, even with the requester role.
 const ownerActions: readonly WorkflowAction[] = ["submit", "respond_info", "withdraw"];
 // A secretary member may only act on work currently assigned to them; the secretariat head may act on any.
 const assigneeActions: readonly WorkflowAction[] = ["release", "request_info", "return_to_requester"];
 // Actions that must carry an explanatory note.
-export const noteRequiredActions: readonly WorkflowAction[] = ["request_info", "respond_info", "return_to_requester", "return_to_secretary_member"];
+export const noteRequiredActions: readonly WorkflowAction[] = ["request_info", "respond_info", "return_to_requester", "return_to_secretary_member", "consult_general_head", "respond_consultation"];
 
 export type ActionContext = { state: WorkflowState; requesterUserId: number; userId: number; roles: BoardRole[]; isAdmin: boolean };
 
@@ -35,6 +35,8 @@ export function checkAction(ctx: ActionContext, action: WorkflowAction) {
   if (ownerActions.includes(action) && !isOwner) throw forbidden();
   const actorRole = authorizeAction(ctx.roles, action, ctx.isAdmin && !ownerActions.includes(action));
   if (assigneeActions.includes(action) && actorRole === "secretary_member" && ctx.state.currentAssigneeId !== ctx.userId) throw forbidden();
+  // Only the general secretariat head who was consulted replies.
+  if (action === "respond_consultation" && actorRole === "general_secretariat_head" && ctx.state.currentAssigneeId !== ctx.userId) throw forbidden();
   assertLifecycle(ctx.state, action);
   assertWorkStatus(ctx.state, workRules[action], action);
   return actorRole;
