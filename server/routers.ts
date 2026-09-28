@@ -179,7 +179,24 @@ export const appRouter = router({
   admin: router({
     reference: protectedProcedure.query(async ({ ctx }) => { if (ctx.user.role !== "admin") throw forbidden(); return listReferenceData(ctx.user.id, "admin"); }),
     users: protectedProcedure.query(async ({ ctx }) => { if (ctx.user.role !== "admin") throw forbidden(); const rows = await queryAll<User>(col(COLLECTIONS.users)); return rows.map(u => ({ id: u.id, name: u.name ?? null, email: u.email ?? null, role: u.role })).sort((a, b) => (a.name ?? "").localeCompare(b.name ?? "")); }),
-    createBoard: protectedProcedure.input(z.object({ code: z.string().min(2).max(32), nameAr: z.string().min(2), nameEn: z.string().optional(), descriptionAr: z.string().optional(), descriptionEn: z.string().optional() })).mutation(async ({ ctx, input }) => { if (ctx.user.role !== "admin") throw forbidden(); const now = Date.now(); const id = await getDb().runTransaction(async tx => { await assertUnique(tx, COLLECTIONS.boards, { code: input.code }, "Board code already exists"); const [boardId] = await allocateIds(tx, COLLECTIONS.boards); tx.set(docRef(COLLECTIONS.boards, boardId), { id: boardId, code: input.code, nameAr: input.nameAr, nameEn: input.nameEn ?? null, mandateAr: null, mandateEn: null, isActive: true, allowWithdrawDuringBoardHeadReview: false, createdByUserId: ctx.user.id, createdAt: now, updatedAt: now, descriptionAr: input.descriptionAr ?? null, descriptionEn: input.descriptionEn ?? null } satisfies Board); return boardId; }); return { id }; }),
+    // A board always starts with a secretariat head and at least one secretariat team member.
+    createBoard: protectedProcedure.input(z.object({ code: z.string().trim().min(2).max(32), nameAr: z.string().trim().min(2), nameEn: z.string().optional(), descriptionAr: z.string().optional(), descriptionEn: z.string().optional(), secretariatHeadUserId: z.number().int().positive(), secretaryMemberUserIds: z.array(z.number().int().positive()).min(1).max(50) })).mutation(async ({ ctx, input }) => {
+      if (ctx.user.role !== "admin") throw forbidden();
+      const members = Array.from(new Set(input.secretaryMemberUserIds));
+      if (members.includes(input.secretariatHeadUserId)) throw new DomainError("VALIDATION_FAILED", "errors.headInTeam");
+      const people = await getManyById<User>(COLLECTIONS.users, [input.secretariatHeadUserId, ...members]);
+      if (people.size !== members.length + 1) throw notFound();
+      const now = Date.now();
+      const id = await getDb().runTransaction(async tx => {
+        await assertUnique(tx, COLLECTIONS.boards, { code: input.code }, "errors.boardCodeExists");
+        const [boardId, ...membershipIds] = await allocateIds(tx, COLLECTIONS.boards, COLLECTIONS.boardMemberships, ...members.map(() => COLLECTIONS.boardMemberships));
+        tx.set(docRef(COLLECTIONS.boards, boardId), { id: boardId, code: input.code, nameAr: input.nameAr, nameEn: input.nameEn?.trim() || null, mandateAr: null, mandateEn: null, isActive: true, allowWithdrawDuringBoardHeadReview: false, createdByUserId: ctx.user.id, createdAt: now, updatedAt: now, descriptionAr: input.descriptionAr ?? null, descriptionEn: input.descriptionEn ?? null } satisfies Board);
+        const assignments: Array<[number, BoardMembership["role"]]> = [[input.secretariatHeadUserId, "secretariat_head"], ...members.map(userId => [userId, "secretary_member"] as [number, BoardMembership["role"]])];
+        assignments.forEach(([userId, role], index) => tx.set(docRef(COLLECTIONS.boardMemberships, membershipIds[index]), { id: membershipIds[index], boardId, userId, role, isActive: true, assignedByUserId: ctx.user.id, createdAt: now, updatedAt: now } satisfies BoardMembership));
+        return boardId;
+      });
+      return { id };
+    }),
     createSpecialty: protectedProcedure.input(z.object({ boardId: z.number().positive(), code: z.string().min(2), nameAr: z.string().min(2), nameEn: z.string().optional() })).mutation(async ({ ctx, input }) => { if (ctx.user.role !== "admin") throw forbidden(); const now = Date.now(); const id = await getDb().runTransaction(async tx => { await assertUnique(tx, COLLECTIONS.specialties, { boardId: input.boardId, code: input.code }, "Specialty code already exists for this board"); const [specialtyId] = await allocateIds(tx, COLLECTIONS.specialties); tx.set(docRef(COLLECTIONS.specialties, specialtyId), { id: specialtyId, boardId: input.boardId, code: input.code, nameAr: input.nameAr, nameEn: input.nameEn ?? null, isActive: true, createdAt: now, updatedAt: now } satisfies Specialty); return specialtyId; }); return { id }; }),
     checklists: protectedProcedure.query(async ({ ctx }) => {
       if (ctx.user.role !== "admin") throw forbidden();
@@ -264,7 +281,21 @@ export const appRouter = router({
       await docRef(COLLECTIONS.checklistQuestions, question.id).update({ isActive: false, updatedAt: Date.now() });
       return { success: true };
     }),
-    deactivateMembership: protectedProcedure.input(z.object({ membershipId: z.number().positive() })).mutation(async ({ ctx, input }) => { if (ctx.user.role !== "admin") throw forbidden(); await docRef(COLLECTIONS.boardMemberships, input.membershipId).update({ isActive: false, updatedAt: Date.now() }); return { success: true }; }),
+    // The last active secretariat head or secretariat team member of a board can't be removed.
+    deactivateMembership: protectedProcedure.input(z.object({ membershipId: z.number().positive() })).mutation(async ({ ctx, input }) => {
+      if (ctx.user.role !== "admin") throw forbidden();
+      await getDb().runTransaction(async tx => {
+        const ref = docRef(COLLECTIONS.boardMemberships, input.membershipId);
+        const membership = (await tx.get(ref)).data() as BoardMembership | undefined;
+        if (!membership) throw notFound();
+        if (membership.isActive && (membership.role === "secretariat_head" || membership.role === "secretary_member")) {
+          const peers = await tx.get(col(COLLECTIONS.boardMemberships).where("boardId", "==", membership.boardId).where("role", "==", membership.role).where("isActive", "==", true));
+          if (peers.size <= 1) throw new DomainError("VALIDATION_FAILED", membership.role === "secretariat_head" ? "errors.lastSecretariatHead" : "errors.lastSecretaryMember");
+        }
+        tx.update(ref, { isActive: false, updatedAt: Date.now() });
+      });
+      return { success: true };
+    }),
     setUserRole: protectedProcedure.input(z.object({ userId: z.number().positive(), role: z.enum(["user", "admin"]) })).mutation(async ({ ctx, input }) => { if (ctx.user.role !== "admin") throw forbidden(); await docRef(COLLECTIONS.users, input.userId).update({ role: input.role }); return { success: true }; }),
     memberships: protectedProcedure.query(async ({ ctx }) => { if (ctx.user.role !== "admin") throw forbidden(); const rows = await queryAll<BoardMembership>(col(COLLECTIONS.boardMemberships)); const [people, boardMap] = await Promise.all([getManyById<{ name: string | null; email: string | null }>(COLLECTIONS.users, rows.map(r => r.userId)), getManyById<Board>(COLLECTIONS.boards, rows.map(r => r.boardId))]); return rows.map(r => ({ id: r.id, userId: r.userId, boardId: r.boardId, role: r.role, isActive: r.isActive, userName: people.get(r.userId)?.name ?? null, userEmail: people.get(r.userId)?.email ?? null, boardNameAr: boardMap.get(r.boardId)?.nameAr ?? null, boardNameEn: boardMap.get(r.boardId)?.nameEn ?? null })).sort((a, b) => Number(b.isActive) - Number(a.isActive) || a.boardId - b.boardId || a.role.localeCompare(b.role) || a.userId - b.userId); }),
     // Adds a board role, or re-activates it if it was previously deactivated.

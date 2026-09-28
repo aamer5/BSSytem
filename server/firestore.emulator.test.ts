@@ -76,13 +76,20 @@ describe.skipIf(!emulated)("Firestore + Firebase Auth (emulator)", { timeout: 30
     const requester = (await signIn("requester@example.com"))!;
     const secretary = (await signIn("secretary@example.com"))!;
     const outsider = (await signIn("outsider@example.com"))!;
+    const [head, backup] = await Promise.all([signIn("head@example.com"), signIn("backup@example.com")]).then(users => users.map(user => user!));
     const asAdmin = callerFor(admin);
 
-    const { id: boardId } = await asAdmin.admin.createBoard({ code: "FIN", nameAr: "المالية", nameEn: "Finance" });
-    await expect(asAdmin.admin.createBoard({ code: "FIN", nameAr: "مكرر" })).rejects.toThrow("Board code already exists");
+    // A board is created together with its secretariat head and team.
+    const secretariat = { secretariatHeadUserId: head.id, secretaryMemberUserIds: [secretary.id, backup.id] };
+    await expect(asAdmin.admin.createBoard({ code: "FIN", nameAr: "المالية", secretariatHeadUserId: head.id, secretaryMemberUserIds: [] })).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    await expect(asAdmin.admin.createBoard({ code: "FIN", nameAr: "المالية", secretariatHeadUserId: head.id, secretaryMemberUserIds: [head.id] })).rejects.toThrow("errors.headInTeam");
+    const { id: boardId } = await asAdmin.admin.createBoard({ code: "FIN", nameAr: "المالية", nameEn: "Finance", ...secretariat });
+    await expect(asAdmin.admin.createBoard({ code: "FIN", nameAr: "مكرر", ...secretariat })).rejects.toThrow("errors.boardCodeExists");
+    const boardMemberships = (await asAdmin.admin.memberships()).filter(m => m.boardId === boardId);
+    expect(boardMemberships.map(m => [m.userId, m.role]).sort()).toEqual([[head.id, "secretariat_head"], [secretary.id, "secretary_member"], [backup.id, "secretary_member"]].sort());
     const { id: specialtyId } = await asAdmin.admin.createSpecialty({ boardId, code: "BUD", nameAr: "الميزانية" });
     await asAdmin.admin.assignMembership({ boardId, userId: requester.id, role: "requester" });
-    const { id: secretaryMembership } = await asAdmin.admin.assignMembership({ boardId, userId: secretary.id, role: "secretary_member" });
+    const secretaryMembership = boardMemberships.find(m => m.userId === secretary.id)!.id;
     await expect(asAdmin.admin.assignMembership({ boardId, userId: requester.id, role: "requester" })).rejects.toThrow("errors.membershipExists");
 
     const draft = await callerFor(requester).requests.createDraft({ boardId, specialtyId, title: "Budget review", subjectType: "financial", priority: "high", confidentialityLevel: "standard" });
@@ -112,6 +119,9 @@ describe.skipIf(!emulated)("Firestore + Firebase Auth (emulator)", { timeout: 30
     expect(await callerFor(admin).dashboard.summary({ locale: "en" })).toMatchObject({ total: 1, inReview: 1, pending: 1 });
 
     await asAdmin.admin.deactivateMembership({ membershipId: secretaryMembership });
+    // The last secretariat head and the last team member can't be removed.
+    await expect(asAdmin.admin.deactivateMembership({ membershipId: boardMemberships.find(m => m.userId === backup.id)!.id })).rejects.toThrow("errors.lastSecretaryMember");
+    await expect(asAdmin.admin.deactivateMembership({ membershipId: boardMemberships.find(m => m.userId === head.id)!.id })).rejects.toThrow("errors.lastSecretariatHead");
     await expect(callerFor(secretary).requests.detail({ requestId: draft.id, locale: "en" })).resolves.toBeNull();
     expect((await callerFor(secretary).reference.list({ locale: "en" })).boards).toEqual([]);
   });
@@ -121,7 +131,8 @@ describe.skipIf(!emulated)("Firestore + Firebase Auth (emulator)", { timeout: 30
     const [requester, other] = await Promise.all([signIn("req@example.com"), signIn("other@example.com")]).then(users => users.map(user => user!));
     const asAdmin = callerFor(admin);
     const asRequester = callerFor(requester);
-    const { id: boardId } = await asAdmin.admin.createBoard({ code: "HR", nameAr: "الموارد" });
+    const hrStaff = (await signIn("hr-staff@example.com"))!;
+    const { id: boardId } = await asAdmin.admin.createBoard({ code: "HR", nameAr: "الموارد", secretariatHeadUserId: admin.id, secretaryMemberUserIds: [hrStaff.id] });
     const { id: specialtyId } = await asAdmin.admin.createSpecialty({ boardId, code: "PAY", nameAr: "الرواتب" });
     const { id: otherSpecialty } = await asAdmin.admin.createSpecialty({ boardId, code: "HIR", nameAr: "التوظيف" });
     for (const user of [requester, other]) await asAdmin.admin.assignMembership({ boardId, userId: user.id, role: "requester" });
@@ -173,9 +184,9 @@ describe.skipIf(!emulated)("Firestore + Firebase Auth (emulator)", { timeout: 30
     const admin = (await signIn("chief@example.com"))!;
     const [requester, other, head, secretary, boardHead] = await Promise.all(["req@example.com", "other@example.com", "head@example.com", "sec@example.com", "bh@example.com"].map(email => signIn(email))).then(users => users.map(user => user!));
     const asAdmin = callerFor(admin);
-    const { id: boardId } = await asAdmin.admin.createBoard({ code: "GOV", nameAr: "الحوكمة" });
+    const { id: boardId } = await asAdmin.admin.createBoard({ code: "GOV", nameAr: "الحوكمة", secretariatHeadUserId: head.id, secretaryMemberUserIds: [secretary.id] });
     const { id: specialtyId } = await asAdmin.admin.createSpecialty({ boardId, code: "POL", nameAr: "السياسات" });
-    for (const [userId, role] of [[requester.id, "requester"], [other.id, "requester"], [head.id, "secretariat_head"], [secretary.id, "secretary_member"], [boardHead.id, "board_head"]] as const) await asAdmin.admin.assignMembership({ boardId, userId, role });
+    for (const [userId, role] of [[requester.id, "requester"], [other.id, "requester"], [boardHead.id, "board_head"]] as const) await asAdmin.admin.assignMembership({ boardId, userId, role });
     expect((await asAdmin.admin.memberships()).filter(m => m.boardId === boardId)).toHaveLength(5);
 
     const { id } = await callerFor(requester).requests.createDraft({ boardId, specialtyId, title: "Policy update", subjectType: "policy", priority: "normal", confidentialityLevel: "standard" });
@@ -224,9 +235,9 @@ describe.skipIf(!emulated)("Firestore + Firebase Auth (emulator)", { timeout: 30
     const admin = (await signIn("chief@example.com"))!;
     const [requester, other, head, secretary, member, boardHead] = await Promise.all(["req@example.com", "other@example.com", "head@example.com", "sec@example.com", "member@example.com", "bh@example.com"].map(email => signIn(email))).then(users => users.map(user => user!));
     const asAdmin = callerFor(admin);
-    const { id: boardId } = await asAdmin.admin.createBoard({ code: "AUD", nameAr: "التدقيق" });
+    const { id: boardId } = await asAdmin.admin.createBoard({ code: "AUD", nameAr: "التدقيق", secretariatHeadUserId: head.id, secretaryMemberUserIds: [secretary.id] });
     const { id: specialtyId } = await asAdmin.admin.createSpecialty({ boardId, code: "INT", nameAr: "داخلي" });
-    for (const [userId, role] of [[requester.id, "requester"], [other.id, "requester"], [head.id, "secretariat_head"], [secretary.id, "secretary_member"], [member.id, "board_member"], [boardHead.id, "board_head"]] as const) await asAdmin.admin.assignMembership({ boardId, userId, role });
+    for (const [userId, role] of [[requester.id, "requester"], [other.id, "requester"], [member.id, "board_member"], [boardHead.id, "board_head"]] as const) await asAdmin.admin.assignMembership({ boardId, userId, role });
     const asRequester = callerFor(requester);
     const detail = (user: typeof requester, requestId: number) => callerFor(user).requests.detail({ requestId, locale: "en" });
 
