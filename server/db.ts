@@ -1,7 +1,12 @@
 import type { Board, BoardMembership, Specialty } from "@shared/schema";
 import { col, COLLECTIONS, queryAll, queryIn } from "./firestore";
+import { scopeMemberships } from "./_core/actingRole";
 
 export async function getActiveMemberships(userId: number) {
+  return scopeMemberships(await getAllActiveMemberships(userId));
+}
+// Unscoped: ignores the "act as" role (used to list the roles a user holds).
+export async function getAllActiveMemberships(userId: number) {
   return queryAll<BoardMembership>(col(COLLECTIONS.boardMemberships).where("userId", "==", userId).where("isActive", "==", true));
 }
 export async function getBoardRoles(userId: number, boardId: number) {

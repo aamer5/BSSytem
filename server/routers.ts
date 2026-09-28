@@ -115,7 +115,8 @@ async function assertUnique(tx: Transaction, name: Parameters<typeof col>[0], fi
 export const appRouter = router({
   system: systemRouter,
   auth: router({
-    me: publicProcedure.query(opts => opts.ctx.user),
+    // The signed-in user as the API currently treats them, plus the roles they can act as.
+    me: publicProcedure.query(({ ctx }) => (ctx.user ? { ...ctx.user, actingRole: ctx.acting?.role ?? null, availableRoles: ctx.acting?.availableRoles ?? [] } : null)),
   }),
   reference: router({
     list: protectedProcedure.input(localeInput).query(({ ctx }) => listReferenceData(ctx.user.id, ctx.user.role, ctx.user.isGeneralSecretariatHead)),

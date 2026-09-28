@@ -380,6 +380,43 @@ describe.skipIf(!emulated)("Firestore + Firebase Auth (emulator)", { timeout: 30
     await expect(callerFor(formerGeneral).requests.detail({ requestId: id, locale: "en" })).resolves.toBeNull();
   });
 
+  it("lets a user act as just one of their roles, never more", async () => {
+    const { createContext } = await import("./_core/context");
+    const adminToken = await idTokenFor("chief@example.com");
+    const admin = (await mod.authenticateRequest(requestWith(adminToken)))!;
+    const [requester, secretary, boardHead] = await Promise.all(["req@example.com", "sec@example.com", "bh@example.com"].map(email => signIn(email))).then(users => users.map(user => user!));
+    const asAdmin = callerFor(admin);
+    // The admin is also this board's secretariat head and a requester on it.
+    const { id: boardId } = await asAdmin.admin.createBoard({ code: "OPS", nameAr: "العمليات", boardHeadUserId: boardHead.id, secretariatHeadUserId: admin.id, secretaryMemberUserIds: [secretary.id] });
+    const { id: specialtyId } = await asAdmin.admin.createSpecialty({ boardId, code: "GEN", nameAr: "عام" });
+    for (const userId of [admin.id, requester.id]) await asAdmin.admin.assignMembership({ boardId, userId, role: "requester" });
+    const { id: othersRequest } = await callerFor(requester).requests.createDraft({ boardId, specialtyId, title: "Someone else's", subjectType: "general", priority: "normal", confidentialityLevel: "standard" });
+    await callerFor(requester).requests.submit({ requestId: othersRequest, expectedRowVersion: 1, locale: "en" });
+
+    const actingAs = async (role?: string) => mod.appRouter.createCaller(await createContext({ req: { headers: { authorization: `Bearer ${adminToken}`, ...(role ? { "x-acting-role": role } : {}) } }, res: {} } as unknown as Parameters<typeof createContext>[0]));
+    const me = await (await actingAs()).auth.me();
+    expect(me).toMatchObject({ role: "admin", actingRole: null });
+    expect(me?.availableRoles.sort()).toEqual(["administrator", "requester", "secretariat_head"].sort());
+
+    // As a requester: no admin pages, only their own requests.
+    const asRequesterRole = await actingAs("requester");
+    expect(await asRequesterRole.auth.me()).toMatchObject({ role: "user", actingRole: "requester" });
+    await expect(asRequesterRole.admin.users()).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(asRequesterRole.requests.detail({ requestId: othersRequest, locale: "en" })).resolves.toBeNull();
+    const { id: mine } = await asRequesterRole.requests.createDraft({ boardId, specialtyId, title: "Mine", subjectType: "general", priority: "normal", confidentialityLevel: "standard" });
+    expect((await asRequesterRole.requests.list({ locale: "en", page: 1, pageSize: 20, requestedByMe: false, assignedToMe: false })).items.map(i => i.id)).toEqual([mine]);
+
+    // As the secretariat head: sees the submitted request and can work it, but can't draft.
+    const asHead = await actingAs("secretariat_head");
+    expect((await asHead.requests.detail({ requestId: othersRequest, locale: "en" }))?.permissions.actions).toEqual(["claim", "assign"]);
+    await expect(asHead.requests.createDraft({ boardId, specialtyId, title: "Nope", subjectType: "general", priority: "normal", confidentialityLevel: "standard" })).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+    // A role the user doesn't hold is ignored rather than granted.
+    expect(await (await actingAs("board_head")).auth.me()).toMatchObject({ role: "admin", actingRole: null });
+    const plain = mod.appRouter.createCaller(await createContext({ req: { headers: { authorization: `Bearer ${await idTokenFor("plain@example.com")}`, "x-acting-role": "administrator" } }, res: {} } as unknown as Parameters<typeof createContext>[0]));
+    expect(await plain.auth.me()).toMatchObject({ role: "user", actingRole: null, availableRoles: [] });
+  });
+
   it("allocates unique ids under concurrent inserts", async () => {
     const ids = await Promise.all(Array.from({ length: 12 }, () => mod.firestore.insertWithId(mod.firestore.COLLECTIONS.requestAttachments, {})));
     expect(new Set(ids).size).toBe(12);

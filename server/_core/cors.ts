@@ -8,7 +8,7 @@ export function corsForAllowedOrigins(req: Request, res: Response, next: NextFun
   if (origin && ENV.allowedOrigins.includes(origin)) {
     res.setHeader("Access-Control-Allow-Origin", origin);
     res.setHeader("Access-Control-Allow-Credentials", "true");
-    res.setHeader("Access-Control-Allow-Headers", "authorization, content-type, trpc-accept");
+    res.setHeader("Access-Control-Allow-Headers", "authorization, content-type, trpc-accept, x-acting-role");
     res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
     res.setHeader("Access-Control-Max-Age", "600");
     res.append("Vary", "Origin");
