@@ -26,6 +26,15 @@ describe("checklist answers", () => {
     expect(missing.map(item => item.id)).toEqual([2]);
   });
 
+  it("requires notes and attachments when the question asks for them", () => {
+    const yesNo = question({ id: 1, answerType: "boolean", noteRequired: true, attachmentRequired: true });
+    const answer = { checklistQuestionId: 1, answerValue: false };
+    expect(missingRequiredQuestions([yesNo], [answer])).toHaveLength(1);
+    expect(missingRequiredQuestions([yesNo], [{ ...answer, comment: " " , evidenceAttachmentId: 5 }], new Set([5]))).toHaveLength(1);
+    expect(missingRequiredQuestions([yesNo], [{ ...answer, comment: "Why", evidenceAttachmentId: 5 }], new Set([6]))).toHaveLength(1);
+    expect(missingRequiredQuestions([yesNo], [{ ...answer, comment: "Why", evidenceAttachmentId: 5 }], new Set([5]))).toHaveLength(0);
+  });
+
   it("prefers the specialty template over the board-wide one", () => {
     const boardWide = template({ id: 1 });
     const specialty = template({ id: 2, specialtyId: 5 });

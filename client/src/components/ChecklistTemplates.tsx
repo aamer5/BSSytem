@@ -2,9 +2,7 @@ import { describeApiError } from "@/lib/errors";
 import { trpc } from "@/lib/trpc";
 import {
   answerTypeLabels,
-  checklistAnswerTypes,
   templateStatusLabels,
-  type ChecklistAnswerType,
   type Locale,
 } from "@shared/domain";
 import { CheckCircle2, Copy, Plus, Trash2 } from "lucide-react";
@@ -19,8 +17,6 @@ const statusStyles = {
   active: "bg-[#e6f1ed] text-[#2f6b4f]",
   retired: "bg-[#efedea] text-[#7d8479]",
 } as const;
-
-const selectTypes: ChecklistAnswerType[] = ["single_select", "multi_select"];
 
 // Build checklist templates per board (or specialty), add questions and activate them.
 export function ChecklistTemplates({
@@ -253,9 +249,21 @@ export function ChecklistTemplates({
                     )}
                     <span className="ms-2 text-xs text-[#7d8479]">
                       {answerTypeLabels[question.answerType][locale]}
+                      {question.answerType === "boolean" &&
+                        (ar ? " + ملاحظات" : " + notes")}
                       {Array.isArray(question.optionsJson) &&
                         ` · ${(question.optionsJson as string[]).join(" / ")}`}
                     </span>
+                    {question.noteRequired && (
+                      <span className="ms-2 rounded-full bg-[#fff8e7] px-2 py-0.5 text-xs text-[#8a6424]">
+                        {ar ? "الملاحظة إلزامية" : "Note required"}
+                      </span>
+                    )}
+                    {question.attachmentRequired && (
+                      <span className="ms-2 rounded-full bg-[#fff8e7] px-2 py-0.5 text-xs text-[#8a6424]">
+                        {ar ? "المرفق إلزامي" : "Attachment required"}
+                      </span>
+                    )}
                   </span>
                   {template.status === "draft" && (
                     <button
@@ -308,23 +316,24 @@ function QuestionForm({
   const ar = locale === "ar";
   const [textAr, setTextAr] = useState("");
   const [textEn, setTextEn] = useState("");
-  const [answerType, setAnswerType] = useState<ChecklistAnswerType>("text");
-  const [required, setRequired] = useState(true);
-  const [options, setOptions] = useState("");
+  const [noteRequired, setNoteRequired] = useState(false);
+  const [attachmentRequired, setAttachmentRequired] = useState(false);
   const create = trpc.admin.createQuestion.useMutation({
     onSuccess: () => {
       setTextAr("");
       setTextEn("");
-      setOptions("");
+      setNoteRequired(false);
+      setAttachmentRequired(false);
       onSaved();
     },
     onError,
   });
-  const needsOptions = selectTypes.includes(answerType);
   return (
     <div className="mt-4 grid gap-2 border-t border-[#eee9df] pt-4">
       <p className="text-xs font-semibold text-[#53645f]">
-        {ar ? "إضافة سؤال" : "Add a question"}
+        {ar
+          ? "إضافة سؤال (نعم / لا مع ملاحظات)"
+          : "Add a question (Yes / No with notes)"}
       </p>
       <div className="grid gap-2 md:grid-cols-2">
         <input
@@ -342,38 +351,22 @@ function QuestionForm({
           aria-label={ar ? "نص السؤال بالإنجليزية" : "Question (English)"}
         />
       </div>
-      <div className="grid gap-2 md:grid-cols-[1fr_2fr_auto_auto] md:items-center">
-        <select
-          className="field"
-          value={answerType}
-          onChange={e => setAnswerType(e.target.value as ChecklistAnswerType)}
-          aria-label={ar ? "نوع الإجابة" : "Answer type"}
-        >
-          {checklistAnswerTypes.map(type => (
-            <option key={type} value={type}>
-              {answerTypeLabels[type][locale]}
-            </option>
-          ))}
-        </select>
-        <input
-          className="field disabled:opacity-40"
-          value={options}
-          onChange={e => setOptions(e.target.value)}
-          disabled={!needsOptions}
-          placeholder={
-            ar
-              ? "الخيارات مفصولة بفواصل: نعم، لا، جزئيًا"
-              : "Options, comma separated: Yes, No, Partly"
-          }
-          aria-label={ar ? "الخيارات" : "Options"}
-        />
+      <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
         <label className="flex items-center gap-2 text-sm">
           <input
             type="checkbox"
-            checked={required}
-            onChange={e => setRequired(e.target.checked)}
+            checked={noteRequired}
+            onChange={e => setNoteRequired(e.target.checked)}
           />
-          {ar ? "إلزامي" : "Required"}
+          {ar ? "الملاحظة إلزامية" : "Note required"}
+        </label>
+        <label className="flex items-center gap-2 text-sm">
+          <input
+            type="checkbox"
+            checked={attachmentRequired}
+            onChange={e => setAttachmentRequired(e.target.checked)}
+          />
+          {ar ? "المرفق إلزامي" : "Attachment required"}
         </label>
         <button
           disabled={textAr.trim().length < 2 || create.isPending}
@@ -382,17 +375,11 @@ function QuestionForm({
               checklistTemplateId: templateId,
               textAr: textAr.trim(),
               textEn: textEn.trim() || undefined,
-              answerType,
-              required,
-              options: needsOptions
-                ? options
-                    .split(/[,،]/)
-                    .map(item => item.trim())
-                    .filter(Boolean)
-                : undefined,
+              noteRequired,
+              attachmentRequired,
             })
           }
-          className="rounded-xl bg-[#d8a84e] px-4 py-2 text-sm font-semibold text-[#163f43] disabled:opacity-50"
+          className="ms-auto rounded-xl bg-[#d8a84e] px-4 py-2 text-sm font-semibold text-[#163f43] disabled:opacity-50"
         >
           {ar ? "إضافة سؤال" : "Add question"}
         </button>

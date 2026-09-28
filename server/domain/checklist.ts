@@ -1,7 +1,7 @@
 import type { ChecklistAnswerValue } from "@shared/domain";
 import type { ChecklistAnswer, ChecklistQuestion, ChecklistTemplate } from "@shared/schema";
 import { DomainError } from "./errors";
-import { answerHasValue } from "./workflow";
+import { questionComplete, type AnswerParts } from "@shared/checklist";
 
 const invalidAnswer = (code: string) => new DomainError("VALIDATION_FAILED", "errors.invalidAnswer", { question: code });
 
@@ -38,10 +38,10 @@ export function normalizeAnswer(question: ChecklistQuestion, value: ChecklistAns
   }
 }
 
-// Required, active questions that still have no usable answer.
-export function missingRequiredQuestions(questions: ChecklistQuestion[], answers: Pick<ChecklistAnswer, "checklistQuestionId" | "answerValue">[]) {
-  const byQuestion = new Map(answers.map(answer => [answer.checklistQuestionId, answer.answerValue]));
-  return questions.filter(question => question.isActive && question.required && !answerHasValue(byQuestion.get(question.id)));
+// Active questions that still miss an answer, a required note or a required attachment.
+export function missingRequiredQuestions(questions: ChecklistQuestion[], answers: AnswerParts[], activeAttachmentIds?: ReadonlySet<number>) {
+  const byQuestion = new Map(answers.map(answer => [answer.checklistQuestionId, answer]));
+  return questions.filter(question => question.isActive && !questionComplete(question, byQuestion.get(question.id), activeAttachmentIds));
 }
 
 // The active template for a request: a specialty-specific one wins over a board-wide one.
